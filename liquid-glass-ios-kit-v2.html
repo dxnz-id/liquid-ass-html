@@ -177,7 +177,9 @@ const FONT = '-apple-system,BlinkMacSystemFont,"SF Pro Text","Inter","Segoe UI",
 
 /* ============ constants (BitChord) ============ */
 const DEFAULTS = { blur: 8, lensH: 0.5, lensA: 0.5, tint: 0.4, vib: 1, chroma: true, depth: true, pillDepth: true, frost: false, glass: true, accent: false, lensZoom: 1.12, res: 0.33, pressScale: 1.08, pressDamp: .55, relDamp: .28, touchGlow: .5, menuDamp: .62, iconBlur: true, iconBlurPx: 6, hud: false };
-const P = { ...DEFAULTS }; if (/[?&]hud\b/.test(location.search)) P.hud = true;
+const SAVE_KEY = 'liquid-glass-ios-kit-v2';
+let SAVE = {}; try { SAVE = JSON.parse(localStorage.getItem(SAVE_KEY)) || {}; } catch (e) {}   // file:// or private mode: localStorage can throw
+const P = { ...DEFAULTS, ...SAVE.P }; if (/[?&]hud\b/.test(location.search)) P.hud = true;
 const LENS_MAX = 48, SCALE = 0.33, FROST_BLUR = 16, FROST_SCALE = 0.25;
 let W = 390, H = 844;
 const STATUS = 54, TOP_H = 52, CTRL = 44, BAR_G = 19, ACTION_GAP = 10, ACTION_EDGE = 1.5;
@@ -337,7 +339,8 @@ function buildDOM(){                // same primitives as live DOM, for HTML-in-
 }
 
 /* ============ Settings screen (layout transcribed from BitChord SettingsSheet.kt) ============ */
-const ST = { haptic: true, direct: true, dolby: true, reduceAnim: false, reduceBlur: false, blend: false, themeMode: 2 };
+const ST = { haptic: true, direct: true, dolby: true, reduceAnim: false, reduceBlur: false, blend: false, themeMode: 2, ...SAVE.ST };
+HAPTIC = ST.haptic;   // saved value wins over the hard-coded true above
 const CATS = [['DOWNLOADS', 'Downloads', 'download'], ['PLAYBACK', 'Playback', 'playcircle'], ['CONTENT', 'Content Preferences', 'video'], ['APPEARANCE', 'Appearance', 'appearance'], ['PERFORMANCE', 'Performance', 'perf'], ['LOCAL', 'Local Music', 'library'], ['STORAGE', 'Storage', 'storage'], ['DATA', 'Your data', 'yourdata'], ['MISC', 'Miscellaneous', 'misc'], ['LANG', 'Language', 'language']];
 let HITS = [], GT = [], A11Y = [], FOCUSKEY = null, a11yKey = '';
 const a11yEls = new Map(); const navScroll = [], GS = {}, SWREG = {};
@@ -345,10 +348,12 @@ const gs = (key, init) => GS[key] || (GS[key] = { x: init ? 1 : 0, v: 0, p: 0, p
 const GLTHUMB = () => GL_OK && P.glass;           // switch/slider thumbs are real glass only when the WebGL glass pipeline is on
 function pageTitle(){ const p = S.nav[S.nav.length - 1]; if (!p) return TITLES[S.tab]; if (p === 'settings') return 'Settings'; return CATS.find(c => c[0] === p.slice(4))[1]; }
 let syncCtrls = () => {};
-function refreshPage(){ syncCtrls(); buildPrims(); if (HIC) buildDOM(); sceneDirty = true; needsRender = true; S.scrollY = clamp(S.scrollY, 0, Math.max(0, contentH - H)); startLoop(); }
+let _savedStr = null;
+function persist(){ const s = JSON.stringify({ P, ST }); if (s === _savedStr) return; _savedStr = s; try { localStorage.setItem(SAVE_KEY, s); } catch (e) {} }
+function refreshPage(){ persist(); syncCtrls(); buildPrims(); if (HIC) buildDOM(); sceneDirty = true; needsRender = true; S.scrollY = clamp(S.scrollY, 0, Math.max(0, contentH - H)); startLoop(); }
 function openPage(id){ if (!S.nav.length) navScroll.length = 0; navScroll.push(S.scrollY); S.nav.push(id); S.menuOpen = false; buildPrims(); if (HIC) buildDOM(); sceneDirty = true; needsRender = true; setScroll(0); startLoop(); }
 function popPage(){ if (!S.nav.length) return; S.nav.pop(); const y = navScroll.pop() || 0; buildPrims(); if (HIC) buildDOM(); sceneDirty = true; needsRender = true; setScroll(y); startLoop(); }
-function setThemeMode(i){ ST.themeMode = i; setTheme(i === 0 ? matchMedia('(prefers-color-scheme: dark)').matches : i === 2); }
+function setThemeMode(i){ ST.themeMode = i; setTheme(i === 0 ? matchMedia('(prefers-color-scheme: dark)').matches : i === 2); persist(); }
 // touch zones (kept apart from layout): hold + slide a switch thumb, drag a slider
 // A glass thumb is drawn on top of the finished frame, so it would skip the bottom scrim.
 // Idle thumbs are therefore flat white page content (faded with the page); the glass lens only takes over while pressed,
@@ -1089,7 +1094,7 @@ const CHK = [[P, 'glass', 'Liquid Glass'], [P, 'frost', 'Better performance for 
 const ctrls = $('#ctrls'), outs = {};
 CTRL_DEFS.forEach(([k, label, mn, mx, st]) => { const row = document.createElement('div'); row.className = 'row'; row.innerHTML = `<label>${label}</label><output></output><input type="range" min="${mn}" max="${mx}" step="${st}">`;
   const inp = row.querySelector('input'), out = row.querySelector('output'); outs[k] = [inp, out];
-  inp.addEventListener('input', () => { P[k] = +inp.value; out.textContent = P[k]; blurDirty = glyphDirty = true; if (S.nav.length) refreshPage(); else startLoop(); }); ctrls.appendChild(row); });
+  inp.addEventListener('input', () => { P[k] = +inp.value; out.textContent = P[k]; blurDirty = glyphDirty = true; if (S.nav.length) refreshPage(); else { persist(); startLoop(); } }); ctrls.appendChild(row); });
 CHK.forEach(([o, k, label]) => { const l = document.createElement('label'); l.className = 'chk'; l.innerHTML = `<input type="checkbox"><span>${label}</span>`; const inp = l.querySelector('input'); outs[(o === ST ? 'st:' : '') + k] = [inp, null, o, k];
   inp.addEventListener('change', () => { o[k] = inp.checked; if (o === ST && k === 'haptic') HAPTIC = ST.haptic; blurDirty = glyphDirty = true; refreshPage(); }); ctrls.appendChild(l); });
 syncCtrls = function(){ for (const k in outs){ const [i, out, o, kk] = outs[k]; if (i.type === 'checkbox') i.checked = !!o[kk]; else { if (document.activeElement !== i) i.value = P[k]; out.textContent = P[k]; } }
@@ -1107,7 +1112,7 @@ if (HIC){
   glc.addEventListener('paint', () => { try { hicUpload(); sceneDirty = true; blurDirty = true; needsRender = true; startLoop(); } catch (e) { console.error('HTML-in-Canvas gagal, pakai canvas:', e); HIC = null; hicOK = false; sceneDirty = true; $('#src').textContent = 'Canvas replika (HTML-in-Canvas gagal)'; startLoop(); } });
 }
 $('#src').textContent = (HIC ? `DOM live via HTML-in-Canvas (${HIC === 'new' ? 'Chrome 155+' : 'Chrome 150–154'})` : (GL_OK ? 'Canvas replika (HTML-in-Canvas tidak aktif di browser ini)' : 'Tanpa WebGL2: blur CSS saja (tanpa lensa/refraksi)')) + diagText();
-setTheme(true); resize(); addEventListener('resize', resize);
+setThemeMode(ST.themeMode); resize(); addEventListener('resize', resize);
 if (GL_OK) $('#src').textContent = $('#src').textContent.replace(/ · DPR.*$/, '') + diagText();      // size is only known after the first resize()
 if (DEBUG) window.__api = { buildDOM, S, ST, P, pill, SPR, openPage, popPage, HITS: () => HITS, setTab, setTheme, setScroll, startLoop, get HIC(){ return HIC; }, hicOK: () => hicOK };
 window.__ready = true;
