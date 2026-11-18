@@ -57,7 +57,7 @@ svg{display:block;overflow:visible}
 .tt.tin{animation:tin .28s ease-out}
 #topTitle{left:0;right:0;top:54px;height:52px;display:grid;place-items:center;font-size:16px;font-weight:600;letter-spacing:.1px;opacity:0}
 #topActions{display:flex;align-items:center}
-#acc{display:flex;align-items:center;overflow:visible;transform-origin:center}
+#acc{z-index:7;display:flex;align-items:center;overflow:visible;transform-origin:center;pointer-events:auto}
 #acc .art{flex:none;width:30.4px;height:30.4px;border-radius:5.7px;background:conic-gradient(from 210deg,#ff5f6d,#ffc371,#7b5cff,#ff5f6d)}
 #acc .meta{flex:1;min-width:0;margin-left:9px;overflow:hidden;white-space:nowrap;-webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 22px),transparent);mask-image:linear-gradient(90deg,#000 calc(100% - 22px),transparent)}
 #acc .t{font-size:13px;font-weight:700;letter-spacing:.15px;line-height:16px}
@@ -65,7 +65,8 @@ svg{display:block;overflow:visible}
 #acc button{flex:none;display:grid;place-items:center;pointer-events:auto}
 #accNext{overflow:hidden}
 .hit{position:absolute;z-index:6}
-#a11y{position:absolute;left:0;top:0;width:1px;height:1px;overflow:hidden;opacity:0;pointer-events:none}
+#a11y,#a11yTabs{position:absolute;left:0;top:0;width:1px;height:1px;overflow:hidden;opacity:0;pointer-events:none}
+#tabFocus{position:absolute;z-index:7;border:2px solid #0a84ff;border-radius:999px;pointer-events:none;display:none}
 button.hit{background:none;border:0;padding:0;margin:0;color:inherit;font:inherit;cursor:pointer;-webkit-tap-highlight-color:transparent}
 .hit:focus-visible{outline:2px solid #0a84ff;outline-offset:2px}
 .panel{width:330px;flex:none;font-size:13px;line-height:1.45;color:#c9cad0;max-height:100vh;overflow-y:auto;box-sizing:border-box;padding:18px 8px 18px 0}
@@ -99,12 +100,12 @@ button.hit{background:none;border:0;padding:0;margin:0;color:inherit;font:inheri
 #tabsFb .fbtab{position:absolute;display:flex;flex-direction:column;align-items:center;gap:1px;padding-top:6.5px;font-size:10px;font-weight:500;letter-spacing:.5px;color:var(--fg)}
 #tabsFb .fbtab span{line-height:12px}
 @media (max-width:520px){
-  body{display:block;padding:0;min-height:0;background:#000}
-  .phone{width:100vw;height:100vh;height:100dvh;border-radius:0;box-shadow:none}
+  body{display:block;padding:env(safe-area-inset-top,0px) 0 env(safe-area-inset-bottom,0px);height:100dvh;min-height:0;background:#000}
+  .phone{width:100vw;height:100vh;height:100dvh;height:calc(100vh - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));height:calc(100dvh - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));border-radius:0;box-shadow:none}
   .home{display:none}
   .panel{display:none;position:fixed;z-index:50;inset:0;background:rgba(10,10,12,.94);padding:60px 22px 22px;overflow:auto;width:auto}
   .panel.open{display:block}
-  #gear{display:grid;position:fixed;z-index:60;right:10px;top:10px;width:34px;height:34px;border-radius:50%;background:rgba(60,60,67,.7);color:#fff;place-items:center;font-size:16px}
+  #gear{display:grid;position:fixed;z-index:60;right:10px;top:calc(10px + env(safe-area-inset-top,0px));width:34px;height:34px;border-radius:50%;background:rgba(60,60,67,.7);color:#fff;place-items:center;font-size:16px}
 }
 </style>
 </head>
@@ -133,10 +134,11 @@ button.hit{background:none;border:0;padding:0;margin:0;color:inherit;font:inheri
   <div id="inlineIcon" class="abs center"></div>
   <div id="searchIcon" class="abs center"></div>
 
-  <div id="accHit" class="hit"></div>
-  <div id="tabHit" class="hit" role="tablist"></div>
+  <div id="tabHit" class="hit"></div>
   <button id="searchHit" class="hit" aria-label="Search"></button>
   <div id="a11y" role="region" aria-label="Settings controls"></div>
+  <div id="a11yTabs" role="tablist" aria-label="Main sections"></div>
+  <div id="tabFocus"></div>
   <button id="hitBack" class="hit" aria-label="Back"></button><button id="hitShare" class="hit" aria-label="Share"></button><button id="hitMore" class="hit" aria-label="More" aria-haspopup="menu" aria-expanded="false"></button>
   <div id="menuScrim"></div>
   <div id="menu" class="abs" role="menu"><div class="mc">
@@ -347,13 +349,14 @@ HAPTIC = ST.haptic;   // saved value wins over the hard-coded true above
 const CATS = [['DOWNLOADS', 'Downloads', 'download'], ['PLAYBACK', 'Playback', 'playcircle'], ['CONTENT', 'Content Preferences', 'video'], ['APPEARANCE', 'Appearance', 'appearance'], ['PERFORMANCE', 'Performance', 'perf'], ['LOCAL', 'Local Music', 'library'], ['STORAGE', 'Storage', 'storage'], ['DATA', 'Your data', 'yourdata'], ['MISC', 'Miscellaneous', 'misc'], ['LANG', 'Language', 'language']];
 let HITS = [], GT = [], A11Y = [], FOCUSKEY = null, a11yKey = '';
 const a11yEls = new Map(); const navScroll = [], GS = {}, SWREG = {};
+const tabsA11y = $('#a11yTabs'), tabFocus = $('#tabFocus');
 const gs = (key, init) => GS[key] || (GS[key] = { x: init ? 1 : 0, v: 0, p: 0, pv: 0, pt: 0 });
 const GLTHUMB = () => GL_OK && P.glass;           // switch/slider thumbs are real glass only when the WebGL glass pipeline is on
 function pageTitle(){ const p = S.nav[S.nav.length - 1]; if (!p) return TITLES[S.tab]; if (p === 'settings') return 'Settings'; return CATS.find(c => c[0] === p.slice(4))[1]; }
 let syncCtrls = () => {};
 let _savedStr = null;
 function persist(){ const s = JSON.stringify({ P, ST }); if (s === _savedStr) return; _savedStr = s; try { localStorage.setItem(SAVE_KEY, s); } catch (e) {} }
-function refreshPage(){ persist(); syncCtrls(); buildPrims(); if (HIC) buildDOM(); sceneDirty = true; needsRender = true; S.scrollY = clamp(S.scrollY, 0, Math.max(0, contentH - H)); startLoop(); }
+function refreshPage(save = true){ if (save) persist(); syncCtrls(); buildPrims(); if (HIC) buildDOM(); sceneDirty = true; needsRender = true; S.scrollY = clamp(S.scrollY, 0, Math.max(0, contentH - H)); startLoop(); }
 function openPage(id){ if (!S.nav.length) navScroll.length = 0; navScroll.push(S.scrollY); S.nav.push(id); S.menuOpen = false; buildPrims(); if (HIC) buildDOM(); sceneDirty = true; needsRender = true; setScroll(0); startLoop(); }
 function popPage(){ if (!S.nav.length) return; S.nav.pop(); const y = navScroll.pop() || 0; buildPrims(); if (HIC) buildDOM(); sceneDirty = true; needsRender = true; setScroll(y); startLoop(); }
 function setThemeMode(i){ ST.themeMode = i; setTheme(i === 0 ? matchMedia('(prefers-color-scheme: dark)').matches : i === 2); persist(); }
@@ -370,13 +373,14 @@ function switchZone(r, tx0, ty0){ const key = r.title; let st = null;
     end: cancelled => { const g = gs(key), s0 = st; st = null; g.drag = false; if (!s0) return; if (!s0.moved){ if (!cancelled) r.on(); return; } if ((g.x > .5) !== !!r.sw()) r.on(); startLoop(); } });
 }
 function sliderZone(sl, g, x0, w, ry){
-  const setFrom = px => { let nv = sl.min + clamp((px - x0 - 20) / (w - 40), 0, 1) * (sl.max - sl.min); nv = Math.round(nv / sl.step) * sl.step; nv = +nv.toFixed(4); if (nv !== sl.get()){ sl.set(nv); refreshPage(); } };
+  let raf = false;
+  const setFrom = px => { let nv = sl.min + clamp((px - x0 - 20) / (w - 40), 0, 1) * (sl.max - sl.min); nv = Math.round(nv / sl.step) * sl.step; nv = +nv.toFixed(4); if (nv !== sl.get()){ sl.set(nv); if (!raf){ raf = true; requestAnimationFrame(() => { raf = false; refreshPage(false); }); } } };
   let grab = null;
   const thumbX = () => x0 + 20 + clamp((sl.get() - sl.min) / (sl.max - sl.min), 0, 1) * (w - 40);
-  HITS.push({ y: ry + 26, h: 46, x: x0 - 10, w: w + 20,
+  HITS.push({ y: ry + 26, h: 46, x: x0 - 10, w: w + 20, hold: true,
     drag: px => { if (grab === null) grab = px - thumbX(); setFrom(px - grab); },
     press: on => { if (!on) grab = null; g.pt = on ? 1 : 0; startLoop(); },
-    end: () => { grab = null; } });
+    end: () => { grab = null; persist(); } });
 }
 const WRAPC = new Map(); try { document.fonts && document.fonts.addEventListener('loadingdone', () => WRAPC.clear()); } catch (e) {}
 function buildSettingsPrims(){
@@ -836,7 +840,7 @@ function applyDOM(){
   searchIcon.style.opacity = S.tab === SEARCH ? 1 : .65;
   const ii = inlineIcon; setR(ii, IN.tab); fb(ii, t * 4); { const k = Math.min(S.tab, 2); if (ii._k !== k){ ii._k = k; ii.innerHTML = svg(['home', 'explore', 'library', 'search'][k], 28); } }
   const th = q('#tabHit'); setR(th, tabs); th.style.pointerEvents = 'auto';
-  syncFallbackTabs(tabs, eT); setR(q('#searchHit'), search0); setR(q('#accHit'), t > .5 ? acc0 : R(acc0.x, acc0.y, acc0.w, acc0.h));
+  syncFallbackTabs(tabs, eT); setR(q('#searchHit'), search0);
   fb(q('#topTitle'), clamp((S.scrollY - 70) / 30, 0, 1) * (1 - clamp(mm * 4, 0, 1))); setTopTitle(pageTitle());
   // interactive top controls + menu that morphs out of the "more" button
   q('#topBack').style.transform = `scale(${SPR.back.x})`; q('#topActions').style.transform = `scale(${SPR.act.x})`;
@@ -979,16 +983,17 @@ function onScrollDelta(d){                       // FloatingTabBarScrollConnecti
   if (acc <= -SCROLL_THRESHOLD && !S.inline){ S.inline = true; acc = 0; } else if (acc >= SCROLL_THRESHOLD && S.inline){ S.inline = false; acc = 0; }
 }
 function setScroll(v){ const n = clamp(v, 0, Math.max(0, contentH - H)), d = n - S.scrollY; if (d !== 0){ onScrollDelta(d); S.scrollY = n; sceneDirty = true; needsRender = true; startLoop(); } else if (v !== n) vel = 0; }
-hit.addEventListener('pointerdown', e => { if (S.nav.length){ const z = zoneAt(e); if (z && z.drag){ const rx = relX(e); hold = { z, px: e.clientX, py: e.clientY, timer: setTimeout(() => { hold = null; drag = null; vel = 0; sdrag = z; z.press(true); z.drag(rx); }, SLIDER_HOLD_MS) }; } else if (z && z.press){ pressed = z; z.press(true); } } drag = { y: e.clientY, y0: e.clientY, x0: e.clientX, t: performance.now(), t0: performance.now(), mv: 0, v: 0 }; vel = 0; hit.setPointerCapture(e.pointerId); });
+hit.addEventListener('pointerdown', e => { let scroll = true; if (S.nav.length){ const z = zoneAt(e); if (z && z.drag){ const rx = relX(e); if (z.hold){ hold = { z, px: e.clientX, py: e.clientY, timer: setTimeout(() => { hold = null; drag = null; vel = 0; sdrag = z; z.press(true); z.drag(rx); }, SLIDER_HOLD_MS) }; } else { scroll = false; sdrag = z; z.press(true); z.drag(rx); } } else if (z && z.press){ pressed = z; z.press(true); } } if (scroll) drag = { y: e.clientY, y0: e.clientY, x0: e.clientX, t: performance.now(), t0: performance.now(), mv: 0, v: 0 }; vel = 0; hit.setPointerCapture(e.pointerId); });
 hit.addEventListener('pointermove', e => { if (hold && (Math.abs(e.clientX - hold.px) > HOLD_SLOP_PX || Math.abs(e.clientY - hold.py) > HOLD_SLOP_PX)){ clearTimeout(hold.timer); hold = null; } if (sdrag){ sdrag.drag(relX(e)); return; } if (!drag) return; drag.mv = Math.max(drag.mv, Math.abs(e.clientY - drag.y0), Math.abs(e.clientX - drag.x0)); const now = performance.now(), dy = e.clientY - drag.y, dt = Math.max(1, now - drag.t) / 1000; setScroll(S.scrollY - dy); drag.v = .7 * drag.v + .3 * (-dy / dt); drag.y = e.clientY; drag.t = now; });
 const endDrag = e => { if (hold){ clearTimeout(hold.timer); hold = null; } if (sdrag){ sdrag.press(false); if (sdrag.end) sdrag.end(!!e && e.type === 'pointercancel'); sdrag = null; return; } if (pressed){ pressed.press(false); pressed = null; } if (drag){ const tap = drag.mv < 8 && performance.now() - drag.t0 < 600 && e && e.type === 'pointerup'; if (tap){ vel = 0; drag = null; onTap(e); return; } vel = clamp(drag.v, -4000, 4000); drag = null; } };
 hit.addEventListener('pointerup', endDrag); hit.addEventListener('pointercancel', endDrag);
-phone.addEventListener('wheel', e => { e.preventDefault(); setScroll(S.scrollY + e.deltaY); }, { passive: false });
+phone.addEventListener('wheel', e => { e.preventDefault(); if (S.menuOpen) return; const d = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaMode === 2 ? e.deltaY * H : e.deltaY; setScroll(S.scrollY + d); }, { passive: false });
 
 function setTab(i, fromPill){
   if (S.nav.length){ S.nav = []; navScroll.length = 0; }
   const prev = S.tab; S.tab = i; sceneDirty = true; needsRender = true; glyphDirty = true; buildPrims(); if (HIC) buildDOM();
   if (i < NT){ if (prev >= NT) pill.snapTo(i); else if (!fromPill) pill.animateTo(i); }
+  [...tabsA11y.children].forEach((b, j) => b.setAttribute('aria-selected', j === i ? 'true' : 'false'));
   S.scrollY = clamp(S.scrollY, 0, Math.max(0, contentH - H)); startLoop();
 }
 (function bindTabs(){
@@ -1013,11 +1018,13 @@ function setTab(i, fromPill){
   };
   th.addEventListener('pointerup', up); th.addEventListener('pointercancel', () => { pill.hold(false); if (st && st.drag) pill.release(S.tab); st = null; startLoop(); });
   $('#searchHit').addEventListener('click', () => { if (S.inline) { S.inline = false; acc = 0; } setTab(SEARCH); });
-  const ah = $('#accHit');
-  ah.addEventListener('pointerdown', () => { S.accPress = true; startLoop(); }); const rel = () => { S.accPress = false; startLoop(); };
-  ah.addEventListener('pointerup', rel); ah.addEventListener('pointercancel', rel); ah.addEventListener('pointerleave', rel);
+  accEl.addEventListener('pointerdown', () => { S.accPress = true; startLoop(); }); const rel = () => { S.accPress = false; startLoop(); };
+  accEl.addEventListener('pointerup', rel); accEl.addEventListener('pointercancel', rel); accEl.addEventListener('pointerleave', rel);
   accPlay.addEventListener('click', e => { e.stopPropagation(); S.playing = !S.playing; playIcon(); });
+  let ti = 0; accNext.addEventListener('click', e => { e.stopPropagation(); ti = (ti + 1) % ALBUMS.length; accMeta.querySelector('.t').textContent = ALBUMS[ti]; accMeta.querySelector('.a').textContent = ARTISTS[ti % ARTISTS.length]; });
 })();
+function tabSlot(i){ if (S.inline) return i === SEARCH ? IN.search : L.tabs; if (i === SEARCH) return EX.search; return R(EX.tabs.x + PILL_INSET + i * tabW(), EX.tabs.y + PILL_INSET, tabW(), rowH()); }
+[...TABS, 'Search'].forEach((name, i) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = name; b.setAttribute('role', 'tab'); b.setAttribute('aria-selected', i === S.tab ? 'true' : 'false'); b.addEventListener('click', () => setTab(i)); b.addEventListener('focus', () => { setR(tabFocus, tabSlot(i)); tabFocus.style.display = 'block'; }); b.addEventListener('blur', () => { tabFocus.style.display = 'none'; }); tabsA11y.appendChild(b); });
 
 (function bindInteractive(){
   const touch = (e, on) => { const r = phone.getBoundingClientRect(); SPR.touch.x = e.clientX - r.left; SPR.touch.y = e.clientY - r.top; if (on !== undefined) SPR.touch.t = on ? 1 : 0; startLoop(); };
@@ -1027,7 +1034,7 @@ function setTab(i, fromPill){
     const up = () => { if (key && SPR[key].t !== 1){ SPR[key].t = 1; SPR[key].d = P.relDamp; SPR[key].v -= 1.2; } SPR.touch.t = 0; startLoop(); };   // release: lower damping + a velocity kick, so it visibly overshoots
     el.addEventListener('pointerup', up); el.addEventListener('pointercancel', up); el.addEventListener('pointerleave', up);
   };
-  bind($('#hitBack'), 'back'); bind($('#hitShare'), 'act'); bind($('#hitMore'), 'act'); bind($('#searchHit'), 'srch'); bind($('#accHit')); bind($('#tabHit'));
+  bind($('#hitBack'), 'back'); bind($('#hitShare'), 'act'); bind($('#hitMore'), 'act'); bind($('#searchHit'), 'srch'); bind(accEl); bind($('#tabHit'));
   $('#hitBack').addEventListener('click', () => { if (S.nav.length) popPage(); });
   let menuHold = null, heldOpen = false;
   $('#hitMore').addEventListener('pointerdown', e => {
@@ -1116,10 +1123,10 @@ function tick(now){
 /* ============ layout / resize ============ */
 let tabsFb = null;
 function initFallbackUI(){
-  phone.classList.add('nogl'); ['#topBack', '#topActions', '#acc', '#searchIcon', '#menu'].forEach(q => $(q).classList.add('fbg'));
+  ['#topBack', '#topActions', '#acc', '#searchIcon', '#menu'].forEach(q => $(q).classList.add('fbg'));
   tabsFb = document.createElement('div'); tabsFb.id = 'tabsFb'; tabsFb.className = 'abs fbg';
   tabsFb.innerHTML = '<div class="ind"></div>' + TABS.map((n, i) => `<div class="fbtab">${svg(['home', 'explore', 'library'][i], 28)}<span>${n}</span></div>`).join('');
-  phone.insertBefore(tabsFb, $('#accHit'));
+  phone.insertBefore(tabsFb, $('#tabHit'));
 }
 function syncFallbackTabs(tabs, e){
   if (!tabsFb) return; setR(tabsFb, tabs); const tw = tabW(), ind = tabsFb.firstChild;
@@ -1160,6 +1167,7 @@ $('#gear').addEventListener('click', () => $('#panel').classList.toggle('open'))
 /* ============ boot ============ */
 try { if (!GL_OK) throw new Error('WebGL2 tidak tersedia'); initGL(); HIC = detectHIC(); }
 catch (err) { console.error(err); GL_OK = false; HIC = null; const f = document.createElement('canvas'); f.id = 'fallbackCv'; phone.insertBefore(f, glc); glc.style.display = 'none'; initFallbackUI(); }
+glc.addEventListener('webglcontextlost', e => { e.preventDefault(); enterFallback('konteks WebGL hilang'); });
 if (HIC){
   setTimeout(() => { if (HIC && !hicOK){ console.warn('HTML-in-Canvas: no paint, using canvas'); HIC = null; sceneDirty = true; $('#src').textContent = 'Canvas replika (HTML-in-Canvas tidak merespons)' + diagText(); startLoop(); } }, 2500);
   glc.addEventListener('paint', () => { try { hicUpload(); sceneDirty = true; blurDirty = true; needsRender = true; startLoop(); } catch (e) { console.error('HTML-in-Canvas gagal, pakai canvas:', e); HIC = null; hicOK = false; sceneDirty = true; $('#src').textContent = 'Canvas replika (HTML-in-Canvas gagal)'; startLoop(); } });
@@ -1168,6 +1176,9 @@ $('#src').textContent = (HIC ? `DOM live via HTML-in-Canvas (${HIC === 'new' ? '
 setThemeMode(ST.themeMode); resize(); addEventListener('resize', resize);
 if (GL_OK) $('#src').textContent = $('#src').textContent.replace(/ · DPR.*$/, '') + diagText();      // size is only known after the first resize()
 if (DEBUG) window.__api = { buildDOM, applyDOM, S, ST, P, pill, SPR, openPage, popPage, HITS: () => HITS, setTab, setTheme, setScroll, startLoop, get HIC(){ return HIC; }, hicOK: () => hicOK };
+if (DEBUG){ const t0 = fitIn(thumbGeo(swCx(0), 14, 0), 2, 0, 60, 28), t1 = fitIn(thumbGeo(swCx(1), 14, 0), 2, 0, 60, 28);
+  console.assert(Math.abs(swCx(0) - 22) < 1e-9 && Math.abs(swCx(1) - 42) < 1e-9, 'switch travel changed');
+  console.assert(t0.x >= 2 && t0.x + t0.w <= 62 && t1.x >= 2 && t1.x + t1.w <= 62, 'switch thumb leaves its track'); }
 window.__ready = true;
 })();
 </script>
