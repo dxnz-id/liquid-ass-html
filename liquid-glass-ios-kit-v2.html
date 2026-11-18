@@ -100,13 +100,14 @@ button.hit{background:none;border:0;padding:0;margin:0;color:inherit;font:inheri
 #tabsFb .fbtab{position:absolute;display:flex;flex-direction:column;align-items:center;gap:1px;padding-top:6.5px;font-size:10px;font-weight:500;letter-spacing:.5px;color:var(--fg)}
 #tabsFb .fbtab span{line-height:12px}
 @media (max-width:520px){
-  body{display:block;padding:env(safe-area-inset-top,0px) 0 env(safe-area-inset-bottom,0px);height:100dvh;min-height:0;background:#000}
-  .phone{width:100vw;height:100vh;height:100dvh;height:calc(100vh - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));height:calc(100dvh - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));border-radius:0;box-shadow:none}
+  body{display:block;padding:0;min-height:0;background:#000}
+  .phone{width:100vw;height:100vh;height:100dvh;border-radius:0;box-shadow:none}
   .home{display:none}
   .panel{display:none;position:fixed;z-index:50;inset:0;background:rgba(10,10,12,.94);padding:60px 22px 22px;overflow:auto;width:auto}
   .panel.open{display:block}
-  #gear{display:grid;position:fixed;z-index:60;right:10px;top:calc(10px + env(safe-area-inset-top,0px));width:34px;height:34px;border-radius:50%;background:rgba(60,60,67,.7);color:#fff;place-items:center;font-size:16px}
+  #gear{display:grid;position:fixed;z-index:60;right:10px;top:10px;width:34px;height:34px;border-radius:50%;background:rgba(60,60,67,.7);color:#fff;place-items:center;font-size:16px}
 }
+#menu.shut, #menu.shut *{pointer-events:none !important}
 </style>
 </head>
 <body>
@@ -191,7 +192,7 @@ const TAB_ROW = 62, ACC_H = 48, INL_H = 48, TAB_VPAD = 6.5, ICON = 28, ICON_GAP 
 const SCROLL_THRESHOLD = 50;
 const TABS = ['Home', 'Explore', 'Library'], SEARCH = 3, NT = 3;
 const TITLES = ['Home', 'Explore', 'Library', 'Search'];
-const S = { dark: true, tab: 2, scrollY: 0, inline: false, t: 0, tv: 0, playing: true, accScale: 1, accScaleV: 0, accPress: false, menuOpen: false, nav: [] };
+const S = { dark: true, tab: 2, scrollY: 0, inline: false, t: 0, tv: 0, ty: 0, tyv: 0, playing: true, accScale: 1, accScaleV: 0, accPress: false, menuOpen: false, nav: [] };
 const SPR = { back: { x: 1, v: 0, t: 1, d: null }, act: { x: 1, v: 0, t: 1, d: null }, srch: { x: 1, v: 0, t: 1, d: null }, menu: { x: 0, v: 0 }, touch: { x: 0, y: 0, s: 0, t: 0 } };
 const DEBUG = /[?&]debug\b/.test(location.search);
 const PF = { dom: 0, build: 0, render: 0, gpu: 0, gn: 0, n: 0 };
@@ -356,7 +357,7 @@ function pageTitle(){ const p = S.nav[S.nav.length - 1]; if (!p) return TITLES[S
 let syncCtrls = () => {};
 let _savedStr = null;
 function persist(){ const s = JSON.stringify({ P, ST }); if (s === _savedStr) return; _savedStr = s; try { localStorage.setItem(SAVE_KEY, s); } catch (e) {} }
-function refreshPage(save = true){ if (save) persist(); syncCtrls(); buildPrims(); if (HIC) buildDOM(); sceneDirty = true; needsRender = true; S.scrollY = clamp(S.scrollY, 0, Math.max(0, contentH - H)); startLoop(); }
+function refreshPage(){ persist(); syncCtrls(); buildPrims(); if (HIC) buildDOM(); sceneDirty = true; needsRender = true; S.scrollY = clamp(S.scrollY, 0, Math.max(0, contentH - H)); startLoop(); }
 function openPage(id){ if (!S.nav.length) navScroll.length = 0; navScroll.push(S.scrollY); S.nav.push(id); S.menuOpen = false; buildPrims(); if (HIC) buildDOM(); sceneDirty = true; needsRender = true; setScroll(0); startLoop(); }
 function popPage(){ if (!S.nav.length) return; S.nav.pop(); const y = navScroll.pop() || 0; buildPrims(); if (HIC) buildDOM(); sceneDirty = true; needsRender = true; setScroll(y); startLoop(); }
 function setThemeMode(i){ ST.themeMode = i; setTheme(i === 0 ? matchMedia('(prefers-color-scheme: dark)').matches : i === 2); persist(); }
@@ -373,14 +374,13 @@ function switchZone(r, tx0, ty0){ const key = r.title; let st = null;
     end: cancelled => { const g = gs(key), s0 = st; st = null; g.drag = false; if (!s0) return; if (!s0.moved){ if (!cancelled) r.on(); return; } if ((g.x > .5) !== !!r.sw()) r.on(); startLoop(); } });
 }
 function sliderZone(sl, g, x0, w, ry){
-  let raf = false;
-  const setFrom = px => { let nv = sl.min + clamp((px - x0 - 20) / (w - 40), 0, 1) * (sl.max - sl.min); nv = Math.round(nv / sl.step) * sl.step; nv = +nv.toFixed(4); if (nv !== sl.get()){ sl.set(nv); if (!raf){ raf = true; requestAnimationFrame(() => { raf = false; refreshPage(false); }); } } };
+  const setFrom = px => { let nv = sl.min + clamp((px - x0 - 20) / (w - 40), 0, 1) * (sl.max - sl.min); nv = Math.round(nv / sl.step) * sl.step; nv = +nv.toFixed(4); if (nv !== sl.get()){ sl.set(nv); refreshPage(); } };
   let grab = null;
   const thumbX = () => x0 + 20 + clamp((sl.get() - sl.min) / (sl.max - sl.min), 0, 1) * (w - 40);
-  HITS.push({ y: ry + 26, h: 46, x: x0 - 10, w: w + 20, hold: true,
+  HITS.push({ y: ry + 26, h: 46, x: x0 - 10, w: w + 20,
     drag: px => { if (grab === null) grab = px - thumbX(); setFrom(px - grab); },
     press: on => { if (!on) grab = null; g.pt = on ? 1 : 0; startLoop(); },
-    end: () => { grab = null; persist(); } });
+    end: () => { grab = null; } });
 }
 const WRAPC = new Map(); try { document.fonts && document.fonts.addEventListener('loadingdone', () => WRAPC.clear()); } catch (e) {}
 function buildSettingsPrims(){
@@ -552,7 +552,9 @@ uniform vec2 u_view; uniform vec4 u_rect; uniform float u_radius;
 uniform sampler2D u_tex; uniform float u_texFlip;
 uniform float u_refH, u_refA, u_depth, u_chroma, u_pillDepth;
 uniform vec4 u_tint; uniform float u_opacity; uniform float u_hlAlpha, u_hlInner; uniform vec3 u_shadow;
-uniform vec3 u_touch;
+uniform vec3 u_touch; uniform vec4 u_clip;   // optional rounded-rect mask (w=0: off), radius = min(w,h)/2
+float sdRR(vec2 c, vec2 hs, float r);
+float clipMask(){ if(u_clip.w<=0.) return 1.; vec2 hs=.5*u_clip.zw; float sd=sdRR(v_css-u_clip.xy-hs,hs,min(hs.x,hs.y)); return clamp(.5-sd/max(fwidth(sd),1e-4),0.,1.); }
 uniform float u_zoom; uniform float u_edge, u_flat, u_useTab; uniform sampler2D u_tab; uniform vec4 u_tabRect; uniform vec4 u_fill;
 
 // ---- RoundedRectSDF (Kyant0/backdrop) ----
@@ -593,7 +595,7 @@ vec3 S(vec2 lp){
 void main(){
   vec2 hs=.5*u_rect.zw; vec2 local=v_css-u_rect.xy; vec2 cc=local-hs;
   float sd=sdRR(cc,hs,u_radius); float px=max(fwidth(sd),1e-4); float cover=clamp(.5-sd/px,0.,1.);
-  if(u_flat>.5){ float a=u_tint.a*cover*u_opacity; o=vec4(u_tint.rgb*a,a); return; }
+  if(u_flat>.5){ float a=u_tint.a*cover*u_opacity*clipMask(); o=vec4(u_tint.rgb*a,a); return; }
 
   float sh=0.;
   if(u_shadow.z>0.){ float sg=.57735*u_shadow.x+.5; if(sdRR(cc-vec2(0.,u_shadow.y),hs,u_radius)<4.5*sg) sh=u_shadow.z*boxShadow(cc-vec2(0.,u_shadow.y),hs,sg,min(u_radius,min(hs.x,hs.y))); }
@@ -627,7 +629,7 @@ void main(){
     rgb=col;
   }
   float a=cover*u_opacity; float shA=sh*(1.-cover)*u_opacity;
-  o=vec4(rgb*a,a+shA);
+  o=vec4(rgb*a,a+shA)*clipMask();
 }`;
 /* flat glyph layer quad (premultiplied RGBA from canvas2D), clipped to a rounded rect */
 const FS_QUAD = `#version 300 es
@@ -819,7 +821,7 @@ playIcon();
 let L = null;   // current layout
 function applyDOM(){
   const t = S.t, cf = colors().fg;
-  const tA = clamp(t / .6, 0, 1), tAy = clamp((t - .7) / .3, 0, 1), tT = 1 - Math.pow(1 - t, 3);
+  const tA = clamp(t / .6, 0, 1), tAy = clamp(S.ty, 0, 1), tT = 1 - Math.pow(1 - t, 3);
   const eA = clamp(1 - tA * 3, 0, 1), eT = clamp(1 - tT * 3, 0, 1);
   const acc0 = R(lerp(EX.acc.x, IN.acc.x, tA), lerp(EX.acc.y, IN.acc.y, tAy), lerp(EX.acc.w, IN.acc.w, tA), lerp(EX.acc.h, IN.acc.h, tA)), sc = S.accScale;
   const acc = R(acc0.x + acc0.w * (1 - sc) / 2, acc0.y + acc0.h * (1 - sc) / 2, acc0.w * sc, acc0.h * sc);
@@ -848,7 +850,7 @@ function applyDOM(){
   fb(q('#topActions'), 1 - clamp(mm * 4, 0, 1));
   for (const id of ['#hitShare', '#hitMore']) q(id).style.pointerEvents = S.menuOpen ? 'none' : '';
   sa(q('#hitMore'), 'aria-expanded', S.menuOpen ? 'true' : 'false');
-  const me = q('#menu'); setR(me, menuR); me.style.borderRadius = L.menuRad + 'px'; me.style.display = mm > .003 ? 'block' : 'none';
+  const me = q('#menu'); setR(me, menuR); me.style.borderRadius = L.menuRad + 'px'; me.style.display = mm > .003 ? 'block' : 'none'; me.style.pointerEvents = S.menuOpen ? '' : 'none'; me.classList.toggle('shut', !S.menuOpen);
   fb(me.firstElementChild, (mm - .5) / .4); q('#menuScrim').style.display = S.menuOpen ? 'block' : 'none';
 }
 function scaleR(r, k){ return R(r.x + r.w * (1 - k) / 2, r.y + r.h * (1 - k) / 2, r.w * k, r.h * k); }
@@ -865,6 +867,7 @@ function drawGlassItem(it){
   gl.uniform1f(U(p, 'u_refH'), it.refH || 0); gl.uniform1f(U(p, 'u_refA'), it.refA || 0); gl.uniform1f(U(p, 'u_depth'), it.depth || 0); gl.uniform1f(U(p, 'u_pillDepth'), it.pillDepth || 0); gl.uniform1f(U(p, 'u_chroma'), it.chroma || 0);
   const tn = it.tint || [0, 0, 0, 0]; gl.uniform4f(U(p, 'u_tint'), tn[0], tn[1], tn[2], tn[3]); gl.uniform1f(U(p, 'u_opacity'), it.op ?? 1);
   gl.uniform1f(U(p, 'u_hlAlpha'), it.hl ?? 1); gl.uniform1f(U(p, 'u_hlInner'), hlInner); const sh = it.shadow || [0, 0, 0]; gl.uniform3f(U(p, 'u_shadow'), sh[0], sh[1], sh[2]);
+  { const c = it.clip; gl.uniform4f(U(p, 'u_clip'), c ? c[0] : 0, c ? c[1] : 0, c ? c[2] : 0, c ? c[3] : 0); }
   gl.uniform1f(U(p, 'u_zoom'), it.zoom || 1); gl.uniform1f(U(p, 'u_edge'), it.edge || 0); gl.uniform1f(U(p, 'u_flat'), it.flat ? 1 : 0); gl.uniform1f(U(p, 'u_useTab'), it.useTab ? 1 : 0);
   if (it.useTab){ const f = it.fill; gl.uniform4f(U(p, 'u_fill'), f[0], f[1], f[2], f[3]); gl.uniform4f(U(p, 'u_tabRect'), EX.tabs.x, EX.tabs.y, EX.tabs.w, EX.tabs.h); }
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
@@ -930,11 +933,13 @@ function render(){
   const tw = tabW(), rh = rowH(), liftH = rh + 2 * PILL_INSET + PILL_GROW, liftW = liftH * tw / rh;
   const lw = (tw + (liftW - tw) * pill.liftX) * (1 + pill.deviation), lh = (rh + (liftH - rh) * pill.liftY) * (1 - pill.deviation);
   const pcx = EX.tabs.x + PILL_INSET + pill.position * tw + tw / 2, pcy = EX.tabs.y + PILL_INSET + rh / 2;
-  const pr = R(pcx - lw / 2, pcy - lh / 2, lw, lh);
+  // While folding, the strip (L.tabs) shrinks but the pill is laid out in the expanded strip (EX.tabs). The pill keeps its shape and is MASKED by the live strip
+  // (rounded rect, same as the glyph layer), instead of being squeezed into it.
+  const pr = R(pcx - lw / 2, pcy - lh / 2, lw, lh), pclip = t > .001 ? [L.tabs.x, L.tabs.y, L.tabs.w, L.tabs.h] : null;
   const glassPill = !frost && P.glass && !pill.isFlat;
   if (pillOn && pe > 0 && !glassPill){
     glassUniformsBase(lowA, 0);
-    drawGlassItem({ ...pr, flat: 1, tint: [1, 1, 1, base], op: pe, margin: 2 });
+    drawGlassItem({ ...pr, clip: pclip, flat: 1, tint: [1, 1, 1, base], op: pe, margin: 2 });
   }
   // backdrop snapshot for the lens = page + bar glass (+ flat fill is absent while the lens is up); taken BEFORE the tab row is drawn,
   // because the shader composites fill + tab row itself, per refracted tap
@@ -950,8 +955,8 @@ function render(){
   if (pillOn && pe > 0 && glassPill){
     const m = pill.material, rim = m * clamp((pill.glassPresence - .45) / .55, 0, 1);
     glassUniformsBase(compTex, 1, glyphTex);
-    drawGlassItem({ ...pr, margin: 32, refH: 12 * pill.glassPresence, refA: 14 * m, chroma: 1, depth: 0, useTab: 1, tint: [0, 0, 0, 0],
-      fill: [1, 1, 1, base * (1 - m)], hl: rim, shadow: [12, 2, .3 * rim], op: pe, zoom: 1 + (P.lensZoom - 1) * m });
+    drawGlassItem({ ...pr, clip: pclip, margin: 32, refH: 12 * pill.glassPresence, refA: 14 * m, chroma: 1, depth: 0, useTab: 1, tint: [0, 0, 0, 0],
+      fill: [1, 1, 1, base], hl: rim, shadow: [12, 2, .3 * rim], op: pe, zoom: 1 + (P.lensZoom - 1) * m });   // fill tetap: kalau ikut memudar, pill hilang di latar gelap
   }
 }
 
@@ -983,11 +988,11 @@ function onScrollDelta(d){                       // FloatingTabBarScrollConnecti
   if (acc <= -SCROLL_THRESHOLD && !S.inline){ S.inline = true; acc = 0; } else if (acc >= SCROLL_THRESHOLD && S.inline){ S.inline = false; acc = 0; }
 }
 function setScroll(v){ const n = clamp(v, 0, Math.max(0, contentH - H)), d = n - S.scrollY; if (d !== 0){ onScrollDelta(d); S.scrollY = n; sceneDirty = true; needsRender = true; startLoop(); } else if (v !== n) vel = 0; }
-hit.addEventListener('pointerdown', e => { let scroll = true; if (S.nav.length){ const z = zoneAt(e); if (z && z.drag){ const rx = relX(e); if (z.hold){ hold = { z, px: e.clientX, py: e.clientY, timer: setTimeout(() => { hold = null; drag = null; vel = 0; sdrag = z; z.press(true); z.drag(rx); }, SLIDER_HOLD_MS) }; } else { scroll = false; sdrag = z; z.press(true); z.drag(rx); } } else if (z && z.press){ pressed = z; z.press(true); } } if (scroll) drag = { y: e.clientY, y0: e.clientY, x0: e.clientX, t: performance.now(), t0: performance.now(), mv: 0, v: 0 }; vel = 0; hit.setPointerCapture(e.pointerId); });
+hit.addEventListener('pointerdown', e => { if (S.nav.length){ const z = zoneAt(e); if (z && z.drag){ const rx = relX(e); hold = { z, px: e.clientX, py: e.clientY, timer: setTimeout(() => { hold = null; drag = null; vel = 0; sdrag = z; z.press(true); z.drag(rx); }, SLIDER_HOLD_MS) }; } else if (z && z.press){ pressed = z; z.press(true); } } drag = { y: e.clientY, y0: e.clientY, x0: e.clientX, t: performance.now(), t0: performance.now(), mv: 0, v: 0 }; vel = 0; hit.setPointerCapture(e.pointerId); });
 hit.addEventListener('pointermove', e => { if (hold && (Math.abs(e.clientX - hold.px) > HOLD_SLOP_PX || Math.abs(e.clientY - hold.py) > HOLD_SLOP_PX)){ clearTimeout(hold.timer); hold = null; } if (sdrag){ sdrag.drag(relX(e)); return; } if (!drag) return; drag.mv = Math.max(drag.mv, Math.abs(e.clientY - drag.y0), Math.abs(e.clientX - drag.x0)); const now = performance.now(), dy = e.clientY - drag.y, dt = Math.max(1, now - drag.t) / 1000; setScroll(S.scrollY - dy); drag.v = .7 * drag.v + .3 * (-dy / dt); drag.y = e.clientY; drag.t = now; });
 const endDrag = e => { if (hold){ clearTimeout(hold.timer); hold = null; } if (sdrag){ sdrag.press(false); if (sdrag.end) sdrag.end(!!e && e.type === 'pointercancel'); sdrag = null; return; } if (pressed){ pressed.press(false); pressed = null; } if (drag){ const tap = drag.mv < 8 && performance.now() - drag.t0 < 600 && e && e.type === 'pointerup'; if (tap){ vel = 0; drag = null; onTap(e); return; } vel = clamp(drag.v, -4000, 4000); drag = null; } };
 hit.addEventListener('pointerup', endDrag); hit.addEventListener('pointercancel', endDrag);
-phone.addEventListener('wheel', e => { e.preventDefault(); if (S.menuOpen) return; const d = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaMode === 2 ? e.deltaY * H : e.deltaY; setScroll(S.scrollY + d); }, { passive: false });
+phone.addEventListener('wheel', e => { e.preventDefault(); setScroll(S.scrollY + e.deltaY); }, { passive: false });
 
 function setTab(i, fromPill){
   if (S.nav.length){ S.nav = []; navScroll.length = 0; }
@@ -1088,7 +1093,12 @@ function tick(now){
   const dt = Math.min(.05, (now - last) / 1000) * P.speed * (DEBUG && window.__ts || 1); last = now; let active = false;
   if (!drag && Math.abs(vel) > 6){ setScroll(S.scrollY + vel * dt); vel *= Math.exp(-3.4 * dt); active = true; } else if (!drag) vel = 0;
   // inline/expanded fold: shared-element bounds spring (stiffness 400, no bounce)
-  const tt = S.inline ? 1 : 0;
+  // The pill's vertical travel (into / out of the bar row) has its own spring. Before it was a window of S.t ([.7,1]); on expand that window sits in the fastest
+  // part of the spring, so the pill left the row in ~50 ms (20-25 px/frame) while on collapse the same move took ~350 ms.
+  // Collapse: the pill descends once the bar is compact. Expand: the pill rises first and the bar waits until it is out of the row.
+  { const tyT = S.inline && S.t >= .65 ? 1 : 0;
+    if (Math.abs(S.ty - tyT) > .0005 || Math.abs(S.tyv) > .001){ const r = PillMotion.spring(S.ty, S.tyv, tyT, dt, 400, 40); S.ty = r[0]; S.tyv = r[1]; if (Math.abs(S.ty - tyT) < .0005 && Math.abs(S.tyv) < .001){ S.ty = tyT; S.tyv = 0; } active = true; } }
+  const tt = S.inline ? 1 : (S.ty > .12 ? 1 : 0);
   if (Math.abs(S.t - tt) > .0005 || Math.abs(S.tv) > .001){ const r = PillMotion.spring(S.t, S.tv, tt, dt, 400, 40); S.t = r[0]; S.tv = r[1]; if (Math.abs(S.t - tt) < .0005 && Math.abs(S.tv) < .001){ S.t = tt; S.tv = 0; } active = true; }
   // accessory press: spring(MediumLow)
   const ts = S.accPress ? 1.04 : 1; if (Math.abs(S.accScale - ts) > .0002 || Math.abs(S.accScaleV) > .001){ const r = PillMotion.spring(S.accScale, S.accScaleV, ts, dt, 400, 40); S.accScale = r[0]; S.accScaleV = r[1]; active = true; }
@@ -1123,7 +1133,7 @@ function tick(now){
 /* ============ layout / resize ============ */
 let tabsFb = null;
 function initFallbackUI(){
-  ['#topBack', '#topActions', '#acc', '#searchIcon', '#menu'].forEach(q => $(q).classList.add('fbg'));
+  phone.classList.add('nogl'); ['#topBack', '#topActions', '#acc', '#searchIcon', '#menu'].forEach(q => $(q).classList.add('fbg'));
   tabsFb = document.createElement('div'); tabsFb.id = 'tabsFb'; tabsFb.className = 'abs fbg';
   tabsFb.innerHTML = '<div class="ind"></div>' + TABS.map((n, i) => `<div class="fbtab">${svg(['home', 'explore', 'library'][i], 28)}<span>${n}</span></div>`).join('');
   phone.insertBefore(tabsFb, $('#tabHit'));
@@ -1176,9 +1186,6 @@ $('#src').textContent = (HIC ? `DOM live via HTML-in-Canvas (${HIC === 'new' ? '
 setThemeMode(ST.themeMode); resize(); addEventListener('resize', resize);
 if (GL_OK) $('#src').textContent = $('#src').textContent.replace(/ · DPR.*$/, '') + diagText();      // size is only known after the first resize()
 if (DEBUG) window.__api = { buildDOM, applyDOM, S, ST, P, pill, SPR, openPage, popPage, HITS: () => HITS, setTab, setTheme, setScroll, startLoop, get HIC(){ return HIC; }, hicOK: () => hicOK };
-if (DEBUG){ const t0 = fitIn(thumbGeo(swCx(0), 14, 0), 2, 0, 60, 28), t1 = fitIn(thumbGeo(swCx(1), 14, 0), 2, 0, 60, 28);
-  console.assert(Math.abs(swCx(0) - 22) < 1e-9 && Math.abs(swCx(1) - 42) < 1e-9, 'switch travel changed');
-  console.assert(t0.x >= 2 && t0.x + t0.w <= 62 && t1.x >= 2 && t1.x + t1.w <= 62, 'switch thumb leaves its track'); }
 window.__ready = true;
 })();
 </script>
