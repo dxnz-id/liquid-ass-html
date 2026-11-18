@@ -192,7 +192,7 @@ const TAB_ROW = 62, ACC_H = 48, INL_H = 48, TAB_VPAD = 6.5, ICON = 28, ICON_GAP 
 const SCROLL_THRESHOLD = 50;
 const TABS = ['Home', 'Explore', 'Library'], SEARCH = 3, NT = 3;
 const TITLES = ['Home', 'Explore', 'Library', 'Search'];
-const S = { dark: true, tab: 2, scrollY: 0, inline: false, t: 0, tv: 0, ty: 0, tyv: 0, playing: true, accScale: 1, accScaleV: 0, accPress: false, menuOpen: false, nav: [] };
+const S = { dark: true, tab: 2, scrollY: 0, inline: false, t: 0, tv: 0, playing: true, accScale: 1, accScaleV: 0, accPress: false, menuOpen: false, nav: [] };
 const SPR = { back: { x: 1, v: 0, t: 1, d: null }, act: { x: 1, v: 0, t: 1, d: null }, srch: { x: 1, v: 0, t: 1, d: null }, menu: { x: 0, v: 0 }, touch: { x: 0, y: 0, s: 0, t: 0 } };
 const DEBUG = /[?&]debug\b/.test(location.search);
 const PF = { dom: 0, build: 0, render: 0, gpu: 0, gn: 0, n: 0 };
@@ -821,7 +821,8 @@ playIcon();
 let L = null;   // current layout
 function applyDOM(){
   const t = S.t, cf = colors().fg;
-  const tA = clamp(t / .6, 0, 1), tAy = clamp(S.ty, 0, 1), tT = 1 - Math.pow(1 - t, 3);
+  const v = clamp(t / .7, 0, 1), u = clamp((t - .55) / .45, 0, 1);
+  const tA = v * v * (3 - 2 * v), tAy = u * u * (3 - 2 * u), tT = 1 - Math.pow(1 - t, 3);
   const eA = clamp(1 - tA * 3, 0, 1), eT = clamp(1 - tT * 3, 0, 1);
   const acc0 = R(lerp(EX.acc.x, IN.acc.x, tA), lerp(EX.acc.y, IN.acc.y, tAy), lerp(EX.acc.w, IN.acc.w, tA), lerp(EX.acc.h, IN.acc.h, tA)), sc = S.accScale;
   const acc = R(acc0.x + acc0.w * (1 - sc) / 2, acc0.y + acc0.h * (1 - sc) / 2, acc0.w * sc, acc0.h * sc);
@@ -1092,13 +1093,12 @@ function startLoop(){ needsRender = true; if (!looping){ looping = true; last = 
 function tick(now){
   const dt = Math.min(.05, (now - last) / 1000) * P.speed * (DEBUG && window.__ts || 1); last = now; let active = false;
   if (!drag && Math.abs(vel) > 6){ setScroll(S.scrollY + vel * dt); vel *= Math.exp(-3.4 * dt); active = true; } else if (!drag) vel = 0;
-  // inline/expanded fold: shared-element bounds spring (stiffness 400, no bounce)
-  // The pill's vertical travel (into / out of the bar row) has its own spring. Before it was a window of S.t ([.7,1]); on expand that window sits in the fastest
-  // part of the spring, so the pill left the row in ~50 ms (20-25 px/frame) while on collapse the same move took ~350 ms.
-  // Collapse: the pill descends once the bar is compact. Expand: the pill rises first and the bar waits until it is out of the row.
-  { const tyT = S.inline && S.t >= .65 ? 1 : 0;
-    if (Math.abs(S.ty - tyT) > .0005 || Math.abs(S.tyv) > .001){ const r = PillMotion.spring(S.ty, S.tyv, tyT, dt, 400, 40); S.ty = r[0]; S.tyv = r[1]; if (Math.abs(S.ty - tyT) < .0005 && Math.abs(S.tyv) < .001){ S.ty = tyT; S.tyv = 0; } active = true; } }
-  const tt = S.inline ? 1 : (S.ty > .12 ? 1 : 0);
+  // inline/expanded fold: one shared spring (stiffness 400, no bounce) drives the bar's x/w AND the pill's vertical travel,
+  // with OVERLAPPING windows (y [.55,1], width [0,.7]) so the rise blends into the stretch as one diagonal move instead of
+  // a stop-then-turn corner (visible in slow motion). Smoothstep maps give zero velocity at each channel's ends.
+  // The windows keep the pill off the row: it clears the inline circles before the bar widens into them — fold-check.mjs
+  // asserts no overlap for W=320..512 across the whole fold.
+  const tt = S.inline ? 1 : 0;
   if (Math.abs(S.t - tt) > .0005 || Math.abs(S.tv) > .001){ const r = PillMotion.spring(S.t, S.tv, tt, dt, 400, 40); S.t = r[0]; S.tv = r[1]; if (Math.abs(S.t - tt) < .0005 && Math.abs(S.tv) < .001){ S.t = tt; S.tv = 0; } active = true; }
   // accessory press: spring(MediumLow)
   const ts = S.accPress ? 1.04 : 1; if (Math.abs(S.accScale - ts) > .0002 || Math.abs(S.accScaleV) > .001){ const r = PillMotion.spring(S.accScale, S.accScaleV, ts, dt, 400, 40); S.accScale = r[0]; S.accScaleV = r[1]; active = true; }
