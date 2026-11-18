@@ -1450,7 +1450,7 @@ void main(){
       let L = null;   // current layout
       function applyDOM() {
         const t = S.t, cf = colors().fg;
-        const v = clamp(t / .7, 0, 1), u = clamp((t - .55) / .45, 0, 1);
+        const v = clamp(t / .8, 0, 1), u = clamp((t - .55) / .45, 0, 1);
         const tA = v * v * (3 - 2 * v), tAy = u * u * (3 - 2 * u), tT = 1 - Math.pow(1 - t, 3);
         const eA = clamp(1 - tA * 3, 0, 1), eT = clamp(1 - tT * 3, 0, 1);
         const acc0 = R(lerp(EX.acc.x, IN.acc.x, tA), lerp(EX.acc.y, IN.acc.y, tAy), lerp(EX.acc.w, IN.acc.w, tA), lerp(EX.acc.h, IN.acc.h, tA)), sc = S.accScale;
@@ -2670,7 +2670,7 @@ fn fs_quad(v: GlassVO) -> @location(0) vec4f {
         const dt = Math.min(.05, (now - last) / 1000) * P.speed * (DEBUG && window.__ts || 1); last = now; let active = false;
         if (!drag && Math.abs(vel) > 6) { setScroll(S.scrollY + vel * dt); vel *= Math.exp(-3.4 * dt); active = true; } else if (!drag) vel = 0;
         // inline/expanded fold: one shared spring (stiffness 400, no bounce) drives the bar's x/w AND the pill's vertical travel,
-        // with OVERLAPPING windows (y [.55,1], width [0,.7]) so the rise blends into the stretch as one diagonal move instead of
+        // with OVERLAPPING windows (y [.55,1], width [0,.8]) so the rise blends into the stretch as one diagonal move instead of
         // a stop-then-turn corner (visible in slow motion). Smoothstep maps give zero velocity at each channel's ends.
         // The windows keep the pill off the row: it clears the inline circles before the bar widens into them — fold-check.mjs
         // asserts no overlap for W=320..512 across the whole fold.
