@@ -366,7 +366,7 @@ const thumbAlpha = (cyContent, pr) => GLTHUMB() ? 1 - clamp(pr, 0, 1) * thumbRam
 function switchZone(r, tx0, ty0){ const key = r.title; let st = null;
   HITS.push({ y: ty0 - 8, h: 44, x: tx0 - 8, w: 80, press: on => { gs(key).pt = on ? 1 : 0; startLoop(); },
     drag: px => { const g = gs(key); if (!st){ st = { px0: px, off: px - (tx0 + swCx(g.x)), moved: false }; return; }
-      if (!st.moved && Math.abs(px - st.px0) > 4){ st.moved = true; g.drag = true; } if (st.moved){ g.x = clamp((px - st.off - tx0 - 22) / 20, 0, 1); g.v = 0; startLoop(); } },
+      if (!st.moved && Math.abs(px - st.px0) > 4){ st.moved = true; g.drag = true; } if (st.moved){ g.x = clamp((px - st.off - tx0 - swCx(0)) / (swCx(1) - swCx(0)), 0, 1); g.v = 0; startLoop(); } },
     end: cancelled => { const g = gs(key), s0 = st; st = null; g.drag = false; if (!s0) return; if (!s0.moved){ if (!cancelled) r.on(); return; } if ((g.x > .5) !== !!r.sw()) r.on(); startLoop(); } });
 }
 function sliderZone(sl, g, x0, w, ry){
@@ -1033,10 +1033,11 @@ function setTab(i, fromPill){
   $('#hitMore').addEventListener('pointerdown', e => {
     heldOpen = false;                                  // flag lama bisa tersisa bila browser tak mengirim klik (pointer-events none saat menu terbuka)
     const sx = e.clientX, sy = e.clientY;
+    const drop = () => { document.removeEventListener('pointermove', moveH); document.removeEventListener('pointerup', upH); document.removeEventListener('pointercancel', cancelH); };
     const moveH = ev => {
       if (!menuHold) return;
       if (!menuHold.held){
-        if (Math.abs(ev.clientX - sx) > 6 || Math.abs(ev.clientY - sy) > 6){ clearTimeout(menuHold.timer); menuHold = null; document.removeEventListener('pointermove', moveH); document.removeEventListener('pointerup', upH); }
+        if (Math.abs(ev.clientX - sx) > 6 || Math.abs(ev.clientY - sy) > 6){ clearTimeout(menuHold.timer); menuHold = null; drop(); }
         return;
       }
       let m = null;
@@ -1044,17 +1045,26 @@ function setTab(i, fromPill){
       if (menuHold.mi !== m){ if (menuHold.mi) menuHold.mi.classList.remove('hov'); menuHold.mi = m; if (m) m.classList.add('hov'); }
     };
     const upH = ev => {
-      document.removeEventListener('pointermove', moveH); document.removeEventListener('pointerup', upH);
+      drop();
       const h = menuHold; menuHold = null;
-      if (!h || !h.held) return;                       // lepas sebelum 350ms: klik biasa yang menanganinya
+      if (h) clearTimeout(h.timer);                     // timer lama jangan bocor ke gesture berikutnya
+      if (!h || !h.held) return;                        // lepas sebelum 350ms: klik biasa yang menanganinya
       if (h.mi){ h.mi.classList.remove('hov'); h.mi.click(); return; }
       const mr = document.getElementById('menu').getBoundingClientRect();
       const inside = ev.clientX >= mr.left && ev.clientX <= mr.right && ev.clientY >= mr.top && ev.clientY <= mr.bottom;
-      if (!inside){ S.menuOpen = false; startLoop(); }  // di dalam menu: biarkan terbuka
+      if (!inside){ S.menuOpen = false; startLoop(); }   // di dalam menu: biarkan terbuka
     };
-    menuHold = { held: false, mi: null, timer: setTimeout(() => { if (!menuHold) return; menuHold.held = true; heldOpen = true; haptic(10); S.menuOpen = true; startLoop(); }, MENU_HOLD_MS) };
+    const cancelH = () => {                             // pointercancel (gestur sistem): bersih tanpa memilih item
+      drop();
+      const h = menuHold; menuHold = null;
+      if (h){ clearTimeout(h.timer); if (h.mi) h.mi.classList.remove('hov'); if (h.held){ S.menuOpen = false; startLoop(); } }
+    };
+    const hold = { held: false, mi: null, timer: 0 };
+    hold.timer = setTimeout(() => { if (menuHold !== hold) return; hold.held = true; heldOpen = true; haptic(10); S.menuOpen = true; startLoop(); }, MENU_HOLD_MS);
+    menuHold = hold;
     document.addEventListener('pointermove', moveH);
     document.addEventListener('pointerup', upH);
+    document.addEventListener('pointercancel', cancelH);
   });
   $('#hitMore').addEventListener('click', () => { if (heldOpen){ heldOpen = false; return; } setTimeout(() => { S.menuOpen = !S.menuOpen; startLoop(); }, S.menuOpen ? 0 : 80); });   // short delay so the release bounce is seen before the capsule morphs
   $('#menuScrim').addEventListener('pointerdown', () => { S.menuOpen = false; startLoop(); });
