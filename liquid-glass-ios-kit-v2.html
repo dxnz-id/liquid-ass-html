@@ -74,15 +74,9 @@
       --fg: #000
     }
 
-    #gl {
-      position: absolute;
-      inset: 0;
-      width: 100%;
-      height: 100%;
-      display: block
-    }
-
-    #fallbackCv {
+    #gl,
+    #fallbackCv,
+    #gpuCv {
       position: absolute;
       inset: 0;
       width: 100%;
@@ -599,6 +593,13 @@
     #menu.shut * {
       pointer-events: none !important
     }
+  
+    #wgpu-dbg {
+      position: fixed; bottom: 0; left: 0; right: 0;
+      background: rgba(0,0,0,.85); color: #f55; font: 11px/1.4 monospace;
+      max-height: 160px; overflow-y: auto; padding: 6px 8px;
+      z-index: 99999; display: none; white-space: pre-wrap; word-break: break-all;
+    }
   </style>
 </head>
 
@@ -665,11 +666,12 @@
     <h1>Liquid Glass — iOS navigation kit v2</h1>
     <p>Scroll / seret konten ke bawah: bar menciut jadi satu baris (ambang 50dp, seperti
       <code>FloatingTabBarScrollConnection</code>). Scroll balik atau tap tab inline untuk membuka. Tap atau geser pill
-      tab untuk melihat lensa.</p>
+      tab untuk melihat lensa.
+    </p>
     <p>Sumber backdrop: <span id="src">…</span></p>
     <p>Renderer: <select id="selR">
         <option value="auto">Auto (WebGL2 → Canvas)</option>
-        <option value="webgpu">WebGPU (tahap awal)</option>
+        <option value="webgpu">WebGPU (Pipeline WGSL penuh)</option>
         <option value="webgl2">WebGL2</option>
         <option value="canvas">Canvas 2D</option>
       </select> <small>(memuat ulang halaman)</small></p>
@@ -688,11 +690,11 @@
       ulang.
       <i>Auto</i> (bawaan) = WebGL2, lalu Canvas 2D bila gagal. Rantai penuh: <b>WebGPU → WebGL2 → Canvas 2D</b>; tiap
       tingkat yang gagal turun satu tingkat, dan baris “Sumber backdrop” menunjukkan renderer yang sedang aktif.<br>
-      • <b>WebGPU</b> (manual, tahap awal): replika halaman digambar lewat GPU; lensa glass, refraksi dan blur progresif
-      belum diport dari GLSL ke WGSL, jadi Auto tidak memilihnya. Bila <code>navigator.gpu</code>/adapter/device gagal
-      atau device hilang, halaman dimuat ulang dengan flag sesi <code>lgSkipGPU</code> dan lanjut ke WebGL2 (tanpa loop;
-      memilih WebGPU lagi menghapus flag).<br>
-      • <b>WebGL2</b>: pipeline glass penuh. Gagal bila tidak tersedia, shader/GL error, konteks hilang, atau layar
+      • <b>WebGPU</b>: pipeline glass penuh dengan shader WGSL (lensa glass, refraksi, dispersi kromatik, blur
+      progresif, touch glow &amp; shadow). Bila <code>navigator.gpu</code>/adapter/device gagal
+      atau device hilang, halaman dimuat ulang dengan flag sesi <code>lgSkipGPU</code> dan lanjut ke WebGL2.<br>
+      • <b>WebGL2</b>: pipeline glass penuh (GLSL fallback). Gagal bila tidak tersedia, shader/GL error, konteks hilang,
+      atau layar
       kosong padahal konten ada (selfCheck) → Canvas 2D.<br>
       • <b>Canvas 2D</b>: replika halaman + bar HTML dengan blur CSS, tanpa lensa/refraksi; juga bisa dipilih
       manual.<br>
@@ -906,7 +908,8 @@
       const a11yEls = new Map(); const navScroll = [], GS = {}, SWREG = {};
       const tabsA11y = $('#a11yTabs'), tabFocus = $('#tabFocus');
       const gs = (key, init) => GS[key] || (GS[key] = { x: init ? 1 : 0, v: 0, p: 0, pv: 0, pt: 0 });
-      const GLTHUMB = () => GL_OK && P.glass;           // switch/slider thumbs are real glass only when the WebGL glass pipeline is on
+      let GPU_OK = false;
+      const GLTHUMB = () => (GL_OK || GPU_OK) && P.glass;           // switch/slider thumbs are real glass only when WebGPU/WebGL glass pipeline is on
       function pageTitle() { const p = S.nav[S.nav.length - 1]; if (!p) return TITLES[S.tab]; if (p === 'settings') return 'Settings'; return CATS.find(c => c[0] === p.slice(4))[1]; }
       let syncCtrls = () => { };
       let _savedStr = null;
@@ -1263,7 +1266,7 @@ void main(){
         if (!glyphTex) glyphTex = tex(2, 2);
         lowScale = 0; ensureLow();
       }
-      const topBlurOn = () => !!(ST.progBlur && P.glass && GL_OK);
+      const topBlurOn = () => !!(ST.progBlur && P.glass && (GL_OK || GPU_OK));
       const TOP_STRIP_H = () => TOP_BAR_H + 16;       // BitChord: topBarHeight() + FADE_RUN (16dp)
       function composePass(cw, ch, col) {
         const on = topBlurOn(), topH = TOP_STRIP_H();
@@ -1427,10 +1430,12 @@ void main(){
           c.save(); c.globalAlpha = alpha; c.fillStyle = col; c.font = `500 10px ${FONT}`; c.textAlign = 'center'; c.textBaseline = 'middle';
           try { c.letterSpacing = '.5px'; } catch (e) { } c.fillText(TABS[i], cxp, PILL_INSET + TAB_VPAD + ICON + ICON_GAP + 6); c.restore();
         }
-        gl.bindTexture(gl.TEXTURE_2D, glyphTex); gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
-        if (resized || glyphTexW !== gw || glyphTexH !== gh) { gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gcv); glyphTexW = gw; glyphTexH = gh; } else gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, gcv);
-        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
-        glyphDirty = false;
+        if (GL_OK) {
+          gl.bindTexture(gl.TEXTURE_2D, glyphTex); gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+          if (resized || glyphTexW !== gw || glyphTexH !== gh) { gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gcv); glyphTexW = gw; glyphTexH = gh; } else gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, gcv);
+          gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+          glyphDirty = false;
+        }
       }
 
       /* ============ DOM sync ============ */
@@ -1601,7 +1606,10 @@ void main(){
         }
       }
 
-      function diagText() { try { return ` · DPR ${DPR} · tex ${gl.getParameter(gl.MAX_TEXTURE_SIZE)} · ${glc.width}×${glc.height}`; } catch (e) { return ''; } }
+      function diagText() {
+        if (GPU_OK && GPU) { try { return ` · DPR ${DPR} · WebGPU (${GPU.fmt}) · ${glc.width}×${glc.height}`; } catch (e) { return ''; } }
+        try { return ` · DPR ${DPR} · tex ${gl.getParameter(gl.MAX_TEXTURE_SIZE)} · ${glc.width}×${glc.height}`; } catch (e) { return ''; }
+      }
       function enterFallback(reason) {
         if (!GL_OK) return; console.error('GL fallback:', reason); GL_OK = false; HIC = null;
         const f = document.createElement('canvas'); f.id = 'fallbackCv'; phone.insertBefore(f, glc); glc.style.display = 'none'; initFallbackUI();
@@ -1619,39 +1627,926 @@ void main(){
           if (spread(a) > 120 && spread(px) < 20) enterFallback('layar GL kosong padahal konten ada');
         } catch (e) { console.warn('selfCheck:', e); }
       }
-      /* ---- WebGPU backend (tahap awal) ----
-         Hanya menampilkan replika halaman (drawContent) lewat GPU; lensa glass / refraksi / blur progresif masih khusus WebGL2 (shader GLSL belum diport ke WGSL).
-         Dipakai hanya kalau dipilih manual; Auto tidak pernah memilihnya. Gagal init / device hilang -> muat ulang dengan flag sesi lgSkipGPU -> rantai lanjut ke WebGL2 -> Canvas 2D. */
+      /* ============ WebGPU Full Pipeline (WGSL) ============ */
       let GPU = null;
-      const WGSL = `struct VO { @builtin(position) p: vec4f, @location(0) uv: vec2f };
-@vertex fn vs(@builtin(vertex_index) i: u32) -> VO { var q = array<vec2f,3>(vec2f(-1,-1), vec2f(3,-1), vec2f(-1,3)); var o: VO; o.p = vec4f(q[i], 0, 1); o.uv = vec2f(q[i].x * .5 + .5, .5 - q[i].y * .5); return o; }
-@group(0) @binding(0) var smp: sampler;
-@group(0) @binding(1) var tx: texture_2d<f32>;
-@fragment fn fs(v: VO) -> @location(0) vec4f { return vec4f(textureSample(tx, smp, v.uv).rgb, 1.); }`;
       function skipGPU(reason) { console.warn('WebGPU dilewati:', reason); try { sessionStorage.setItem('lgSkipGPU', '1'); } catch (e) { } location.reload(); }
       function setRenderer(i) { ST.renderer = RENDERERS[i] || 'auto'; try { sessionStorage.removeItem('lgSkipGPU'); } catch (e) { } persist(); location.reload(); }
+
+      const WGSL_SHADERS = `
+struct FullVO {
+  @builtin(position) p: vec4f,
+  @location(0) uv: vec2f,
+};
+
+@vertex
+fn vs_full(@builtin(vertex_index) vid: u32) -> FullVO {
+  var q = array<vec2f, 3>(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0));
+  var o: FullVO;
+  o.p = vec4f(q[vid], 0.0, 1.0);
+  o.uv = vec2f(q[vid].x * 0.5 + 0.5, 0.5 - q[vid].y * 0.5);
+  return o;
+}
+
+@group(0) @binding(0) var smp_blit: sampler;
+@group(0) @binding(1) var tx_blit: texture_2d<f32>;
+@fragment
+fn fs_blit(v: FullVO) -> @location(0) vec4f {
+  return vec4f(textureSampleLevel(tx_blit, smp_blit, v.uv, 0.0).rgb, 1.0);
+}
+
+struct DownUniforms {
+  texel: vec2f,
+  sat: f32,
+  pad: f32,
+};
+@group(0) @binding(0) var smp_down: sampler;
+@group(0) @binding(1) var tx_down: texture_2d<f32>;
+@group(0) @binding(2) var<uniform> u_down: DownUniforms;
+@fragment
+fn fs_down(v: FullVO) -> @location(0) vec4f {
+  var c = vec3f(0.0);
+  for (var y = -1; y <= 1; y++) {
+    for (var x = -1; x <= 1; x++) {
+      c += textureSampleLevel(tx_down, smp_down, v.uv + vec2f(f32(x), f32(y)) * u_down.texel, 0.0).rgb;
+    }
+  }
+  c /= 9.0;
+  let gray = dot(c, vec3f(0.213, 0.715, 0.072));
+  let res = mix(vec3f(gray), c, u_down.sat);
+  return vec4f(clamp(res, vec3f(0.0), vec3f(1.0)), 1.0);
+}
+
+struct BlurUniforms {
+  dir: vec2f,
+  lim: f32,
+  stp: f32,
+  w: array<vec4f, 7>,
+};
+@group(0) @binding(0) var smp_blur: sampler;
+@group(0) @binding(1) var tx_blur: texture_2d<f32>;
+@group(0) @binding(2) var<uniform> u_blur: BlurUniforms;
+
+fn get_blur_w(idx: u32) -> f32 {
+  return u_blur.w[idx / 4u][idx % 4u];
+}
+
+@fragment
+fn fs_blur(v: FullVO) -> @location(0) vec4f {
+  let w0 = get_blur_w(0u);
+  var acc = textureSampleLevel(tx_blur, smp_blur, v.uv, 0.0).rgb * w0;
+  var ws = w0;
+  for (var i = 1u; i <= 24u; i++) {
+    let fi = f32(i) * u_blur.stp;
+    if (fi > u_blur.lim + 0.001) { break; }
+    let w = get_blur_w(i);
+    acc += (textureSampleLevel(tx_blur, smp_blur, v.uv + u_blur.dir * fi, 0.0).rgb +
+            textureSampleLevel(tx_blur, smp_blur, v.uv - u_blur.dir * fi, 0.0).rgb) * w;
+    ws += 2.0 * w;
+  }
+  return vec4f(acc / ws, 1.0);
+}
+
+fn eio(x_in: f32) -> f32 {
+  let x = clamp(x_in, 0.0, 1.0);
+  var s = x;
+  for (var i = 0; i < 6; i++) {
+    let q = 1.0 - s;
+    let bx = 3.0 * q * q * s * 0.42 + 3.0 * q * s * s * 0.58 + s * s * s;
+    let d = 3.0 * q * q * 0.42 + 6.0 * q * s * 0.16 + 3.0 * s * s * 0.42;
+    s = clamp(s - (bx - x) / max(d, 1e-3), 0.0, 1.0);
+  }
+  let q = 1.0 - s;
+  return 3.0 * q * s * s + s * s * s;
+}
+
+struct VBlurUniforms {
+  dir: vec2f,
+  view: vec2f,
+  bg: vec3f,
+  topH: f32,
+  sig: f32,
+  pad0: f32,
+  pad1: f32,
+  pad2: f32,
+};
+@group(0) @binding(0) var smp_vblur: sampler;
+@group(0) @binding(1) var tx_vblur: texture_2d<f32>;
+@group(0) @binding(2) var<uniform> u_vb: VBlurUniforms;
+
+fn sp_vblur(uv: vec2f) -> vec3f {
+  if (uv.y < 0.0) { return u_vb.bg; }
+  return textureSampleLevel(tx_vblur, smp_vblur, uv, 0.0).rgb;
+}
+
+@fragment
+fn fs_vblur(v: FullVO) -> @location(0) vec4f {
+  let I = 1.0 - eio(v.uv.y * u_vb.view.y / u_vb.topH);
+  let sg = u_vb.sig * I;
+  if (sg < 0.05) { return vec4f(textureSampleLevel(tx_vblur, smp_vblur, v.uv, 0.0).rgb, 1.0); }
+  let lim = 3.2 * sg;
+  let stp = max(1.0, lim / 36.0);
+  var acc = sp_vblur(v.uv);
+  var ws = 1.0;
+  for (var i = 1; i <= 36; i++) {
+    let fi = f32(i) * stp;
+    if (fi > lim + 0.001) { break; }
+    let w = exp(-fi * fi / (2.0 * sg * sg));
+    let d = u_vb.dir * fi;
+    acc += (sp_vblur(v.uv + d) + sp_vblur(v.uv - d)) * w;
+    ws += 2.0 * w;
+  }
+  return vec4f(acc / ws, 1.0);
+}
+
+struct ComposeUniforms {
+  view: vec2f,
+  scrimH: f32,
+  topH: f32,
+  bg: vec3f,
+  topOn: f32,
+};
+@group(0) @binding(0) var smp_comp: sampler;
+@group(0) @binding(1) var tx_page: texture_2d<f32>;
+@group(0) @binding(2) var tx_tb: texture_2d<f32>;
+@group(0) @binding(3) var<uniform> u_cp: ComposeUniforms;
+
+@fragment
+fn fs_compose(v: FullVO) -> @location(0) vec4f {
+  var c = textureSampleLevel(tx_page, smp_comp, v.uv, 0.0).rgb;
+  let y = v.uv.y * u_cp.view.y;
+  let tt = y / u_cp.topH;
+  if (u_cp.topOn > 0.5 && tt < 1.0) {
+    var foot = 1.0;
+    if (tt > 0.6) { foot = 1.0 - eio((tt - 0.6) / 0.4); }
+    var bl = textureSampleLevel(tx_tb, smp_comp, v.uv, 0.0).rgb;
+    let noise = fract(sin(dot(v.p.xy, vec2f(12.9898, 78.233))) * 43758.5453);
+    bl += (noise - 0.5) / 255.0;
+    c = mix(c, bl, foot);
+  }
+  let st = (y - (u_cp.view.y - u_cp.scrimH)) / u_cp.scrimH;
+  if (st > 0.0) {
+    let s = clamp(st, 0.0, 1.0);
+    c = mix(c, u_cp.bg, s * s * s);
+  }
+  return vec4f(c, 1.0);
+}
+
+struct GlassVO {
+  @builtin(position) pos: vec4f,
+  @location(0) css: vec2f,
+};
+
+struct GlassUniforms {
+  view: vec2f,
+  margin: f32,
+  radius: f32,
+  rect: vec4f,
+  tint: vec4f,
+  clip: vec4f,
+  tabRect: vec4f,
+  fill: vec4f,
+  shadow: vec3f,
+  opacity: f32,
+  touch: vec3f,
+  gn: f32,
+  refH: f32,
+  refA: f32,
+  depth: f32,
+  chroma: f32,
+  pillDepth: f32,
+  hlAlpha: f32,
+  hlInner: f32,
+  zoom: f32,
+  edge: f32,
+  flat: f32,
+  useTab: f32,
+  texFlip: f32,
+};
+
+@group(0) @binding(0) var<uniform> u_gl: GlassUniforms;
+@group(0) @binding(1) var smp_glass: sampler;
+@group(0) @binding(2) var tx_glass: texture_2d<f32>;
+@group(0) @binding(3) var tx_tab: texture_2d<f32>;
+
+@vertex
+fn vs_glass(@builtin(vertex_index) vid: u32) -> GlassVO {
+  var a_pts = array<vec2f, 4>(vec2f(0.0, 0.0), vec2f(1.0, 0.0), vec2f(0.0, 1.0), vec2f(1.0, 1.0));
+  let a = a_pts[vid];
+  let p = u_gl.rect.xy - vec2f(u_gl.margin) + a * (u_gl.rect.zw + 2.0 * u_gl.margin);
+  var o: GlassVO;
+  o.css = p;
+  o.pos = vec4f(p.x / u_gl.view.x * 2.0 - 1.0, 1.0 - p.y / u_gl.view.y * 2.0, 0.0, 1.0);
+  return o;
+}
+
+fn sdRR(c: vec2f, hs: vec2f, r: f32) -> f32 {
+  let cc = abs(c) - (hs - vec2f(r));
+  return length(max(cc, vec2f(0.0))) - r + min(max(cc.x, cc.y), 0.0);
+}
+
+fn gradSd(c: vec2f, hs: vec2f, r: f32) -> vec2f {
+  let cc = abs(c) - (hs - vec2f(r));
+  if (cc.x >= 0.0 || cc.y >= 0.0) {
+    let m = max(cc, vec2f(0.0));
+    let l = length(m);
+    if (l > 1e-5) { return sign(c) * (m / l); }
+    return vec2f(0.0);
+  }
+  let gx = step(cc.y, cc.x);
+  return sign(c) * vec2f(gx, 1.0 - gx);
+}
+
+fn nrm(v: vec2f) -> vec2f {
+  let l = length(v);
+  if (l > 1e-5) { return v / l; }
+  return vec2f(0.0);
+}
+
+fn circleMap(x: f32) -> f32 {
+  return 1.0 - sqrt(max(1.0 - x * x, 0.0));
+}
+
+fn gauss(x: f32, s: f32) -> f32 {
+  return exp(-x * x / (2.0 * s * s)) / (2.50662827 * s);
+}
+
+fn erfa(x_in: f32) -> f32 {
+  let s = sign(x_in);
+  let a = abs(x_in);
+  var x = 1.0 + (0.278393 + (0.230389 + 0.078108 * (a * a)) * a) * a;
+  x *= x;
+  return s - s / (x * x);
+}
+
+fn rbX(x: f32, y: f32, s: f32, corner: f32, hs: vec2f) -> f32 {
+  let delta = min(hs.y - corner - abs(y), 0.0);
+  let curved = hs.x - corner + sqrt(max(0.0, corner * corner - delta * delta));
+  let integral = 0.5 + 0.5 * vec2f(
+    erfa((x - curved) * (0.70710678 / s)),
+    erfa((x + curved) * (0.70710678 / s))
+  );
+  return integral.y - integral.x;
+}
+
+fn boxShadow(p: vec2f, hs: vec2f, s: f32, corner: f32) -> f32 {
+  let low = p.y - hs.y;
+  let high = p.y + hs.y;
+  let st = clamp(-3.0 * s, low, high);
+  let en = clamp(3.0 * s, low, high);
+  let step_ = (en - st) / 6.0;
+  var y = st + step_ * 0.5;
+  var v = 0.0;
+  for (var i = 0; i < 6; i++) {
+    v += rbX(p.x, p.y - y, s, corner, hs) * gauss(y, s) * step_;
+    y += step_;
+  }
+  return v;
+}
+
+fn clipMask(v_css: vec2f) -> f32 {
+  if (u_gl.clip.w <= 0.0) { return 1.0; }
+  let hs = 0.5 * u_gl.clip.zw;
+  let sd = sdRR(v_css - u_gl.clip.xy - hs, hs, min(hs.x, hs.y));
+  return clamp(0.5 - sd / max(fwidth(sd), 1e-4), 0.0, 1.0);
+}
+
+fn sampleBackdrop(lp: vec2f) -> vec3f {
+  let p = 0.5 * u_gl.rect.zw + (lp - 0.5 * u_gl.rect.zw) / u_gl.zoom;
+  let css = u_gl.rect.xy + p;
+  var uv = css / u_gl.view;
+  if (u_gl.texFlip > 0.5) { uv.y = 1.0 - uv.y; }
+  var c = textureSampleLevel(tx_glass, smp_glass, uv, 0.0).rgb;
+  if (u_gl.useTab > 0.5) {
+    c = mix(c, u_gl.fill.rgb, u_gl.fill.a);
+    let tu = (css - u_gl.tabRect.xy) / u_gl.tabRect.zw;
+    if (tu.x >= 0.0 && tu.x <= 1.0 && tu.y >= 0.0 && tu.y <= 1.0) {
+      let t = textureSampleLevel(tx_tab, smp_glass, tu, 0.0);
+      c = c * (1.0 - t.a) + t.rgb * t.a;
+    }
+  }
+  return c;
+}
+
+@fragment
+fn fs_glass(v: GlassVO) -> @location(0) vec4f {
+  let hs = 0.5 * u_gl.rect.zw;
+  let local = v.css - u_gl.rect.xy;
+  let cc = local - hs;
+  let sd = sdRR(cc, hs, u_gl.radius);
+  let px = max(fwidth(sd), 1e-4);
+  let cover = clamp(0.5 - sd / px, 0.0, 1.0);
+  let cMask = clipMask(v.css);
+
+  if (u_gl.flat > 0.5) {
+    let a = u_gl.tint.a * cover * u_gl.opacity * cMask;
+    return vec4f(u_gl.tint.rgb * a, a);
+  }
+
+  var sh = 0.0;
+  if (u_gl.shadow.z > 0.0) {
+    let sg = 0.57735 * u_gl.shadow.x + 0.5;
+    if (sdRR(cc - vec2f(0.0, u_gl.shadow.y), hs, u_gl.radius) < 4.5 * sg) {
+      sh = u_gl.shadow.z * boxShadow(cc - vec2f(0.0, u_gl.shadow.y), hs, sg, min(u_gl.radius, min(hs.x, hs.y)));
+    }
+  }
+
+  var rgb = vec3f(0.0);
+  if (cover > 0.0) {
+    var col: vec3f;
+    if (u_gl.refH > 0.0 && u_gl.refA > 0.0 && -sd < u_gl.refH) {
+      let sdn = min(sd, 0.0);
+      let d = circleMap(1.0 - (-sdn) / u_gl.refH) * (-u_gl.refA);
+      let gr = min(u_gl.radius * 1.5, min(hs.x, hs.y));
+      var radial = nrm(cc);
+      if (u_gl.pillDepth > 0.5) {
+        let rr = min(u_gl.radius, min(hs.x, hs.y));
+        radial = nrm(cc - clamp(cc, -(hs - vec2f(rr)), hs - vec2f(rr)));
+      }
+      let grad = nrm(gradSd(cc, hs, gr) + u_gl.depth * radial);
+      let rc = local + d * grad;
+      if (u_gl.chroma > 0.5) {
+        var di = u_gl.chroma * ((cc.x * cc.y) / (hs.x * hs.y));
+        if (u_gl.pillDepth > 0.5) { di = u_gl.chroma * 0.5; }
+        let dc = d * grad * di;
+        let red = sampleBackdrop(rc + dc);
+        let orange = sampleBackdrop(rc + dc * (2.0 / 3.0));
+        let yellow = sampleBackdrop(rc + dc * (1.0 / 3.0));
+        let green = sampleBackdrop(rc);
+        let cyan = sampleBackdrop(rc - dc * (1.0 / 3.0));
+        let blue = sampleBackdrop(rc - dc * (2.0 / 3.0));
+        let purple = sampleBackdrop(rc - dc);
+        col.r = red.r / 3.5 + orange.r / 3.5 + yellow.r / 3.5 + purple.r / 7.0;
+        col.g = orange.g / 7.0 + yellow.g / 3.5 + green.g / 3.5 + cyan.g / 3.5;
+        col.b = cyan.b / 3.0 + blue.b / 3.0 + purple.b / 3.0;
+      } else {
+        col = sampleBackdrop(rc);
+      }
+    } else {
+      col = sampleBackdrop(local);
+    }
+    col = mix(col, u_gl.tint.rgb, u_gl.tint.a);
+    {
+      let td = length(v.css - u_gl.touch.xy);
+      let g = u_gl.touch.z * 0.28 * exp(-td * td / (2.0 * 72.0 * 72.0));
+      let nz = fract(sin(dot(v.pos.xy, vec2f(12.9898, 78.233))) * 43758.5453);
+      col += vec3f(g * (1.0 + u_gl.gn * (nz * 2.0 - 1.0)));
+    }
+    let inner = -sd;
+    let gr2 = min(u_gl.radius * 1.5, min(hs.x, hs.y));
+    let band = 1.0 - smoothstep(u_gl.hlInner - 0.3, u_gl.hlInner + 0.3, inner);
+    let inten = abs(dot(gradSd(cc, hs, gr2), vec2f(0.70710678)));
+    col += vec3f(0.5 * inten * band * u_gl.hlAlpha);
+    col = mix(col, vec3f(1.0), u_gl.edge * 0.10 * (1.0 - smoothstep(0.5 - 0.3, 0.5 + 0.3, inner)));
+    rgb = col;
+  }
+  let a = cover * u_gl.opacity;
+  let shA = sh * (1.0 - cover) * u_gl.opacity;
+  return vec4f(rgb * a, a + shA) * cMask;
+}
+
+struct QuadUniforms {
+  view: vec2f,
+  margin: f32,
+  pad0: f32,
+  rect: vec4f,
+  clip: vec4f,
+  clipR: f32,
+  alpha: f32,
+  blurPx: f32,
+  pad1: f32,
+};
+
+@group(0) @binding(0) var<uniform> u_qd: QuadUniforms;
+@group(0) @binding(1) var smp_quad: sampler;
+@group(0) @binding(2) var tx_quad: texture_2d<f32>;
+
+@vertex
+fn vs_quad(@builtin(vertex_index) vid: u32) -> GlassVO {
+  var a_pts = array<vec2f, 4>(vec2f(0.0, 0.0), vec2f(1.0, 0.0), vec2f(0.0, 1.0), vec2f(1.0, 1.0));
+  let a = a_pts[vid];
+  let p = u_qd.rect.xy - vec2f(u_qd.margin) + a * (u_qd.rect.zw + 2.0 * u_qd.margin);
+  var o: GlassVO;
+  o.css = p;
+  o.pos = vec4f(p.x / u_qd.view.x * 2.0 - 1.0, 1.0 - p.y / u_qd.view.y * 2.0, 0.0, 1.0);
+  return o;
+}
+
+@fragment
+fn fs_quad(v: GlassVO) -> @location(0) vec4f {
+  let tu = (v.css - u_qd.rect.xy) / u_qd.rect.zw;
+  var t = textureSampleLevel(tx_quad, smp_quad, tu, 0.0);
+  if (u_qd.blurPx > 0.05) {
+    let r = u_qd.blurPx / u_qd.rect.zw;
+    var a = t;
+    for (var i = 0; i < 8; i++) {
+      let an = f32(i) * 0.785398;
+      a += textureSampleLevel(tx_quad, smp_quad, tu + vec2f(cos(an), sin(an)) * r, 0.0) +
+           textureSampleLevel(tx_quad, smp_quad, tu + vec2f(cos(an), sin(an)) * r * 0.5, 0.0);
+    }
+    t = a / 17.0;
+  }
+  let hs = 0.5 * u_qd.clip.zw;
+  let sd = sdRR(v.css - u_qd.clip.xy - hs, hs, u_qd.clipR);
+  let m = clamp(0.5 - sd / max(fwidth(sd), 1e-4), 0.0, 1.0);
+  return vec4f(t.rgb, t.a * m * u_qd.alpha);   // upload is straight-alpha, so blend with src-alpha (not one/1-srcA)
+}
+`;
+
       async function initWebGPU() {
         if (!navigator.gpu) throw new Error('navigator.gpu tidak ada');
         const ad = await navigator.gpu.requestAdapter(); if (!ad) throw new Error('adapter WebGPU tidak ada');
-        const dev = await ad.requestDevice(), c = document.createElement('canvas'), ctx = c.getContext('webgpu'); if (!ctx) throw new Error('konteks webgpu gagal');
-        const fmt = navigator.gpu.getPreferredCanvasFormat(); ctx.configure({ device: dev, format: fmt, alphaMode: 'opaque' });
-        const mod = dev.createShaderModule({ code: WGSL });
-        const pipe = dev.createRenderPipeline({ layout: 'auto', vertex: { module: mod, entryPoint: 'vs' }, fragment: { module: mod, entryPoint: 'fs', targets: [{ format: fmt }] }, primitive: { topology: 'triangle-list' } });
+        const dev = await ad.requestDevice(); if (!dev) throw new Error('device WebGPU gagal');
         dev.lost.then(i => skipGPU('device hilang: ' + i.message));
-        c.id = 'gpuCv'; GPU = { dev, ctx, c, pipe, smp: dev.createSampler({ magFilter: 'linear', minFilter: 'linear' }), tex: null, bg: null };
-        phone.insertBefore(c, $('#fallbackCv')); $('#fallbackCv').style.display = 'none'; sizeGPU(); sceneDirty = true; startLoop();
+
+        let c = document.getElementById('gpuCv');
+        if (!c) {
+          c = document.createElement('canvas');
+          c.id = 'gpuCv';
+          phone.insertBefore(c, glc);
+        }
+        const ctx = c.getContext('webgpu'); if (!ctx) throw new Error('konteks webgpu gagal');
+        const fmt = navigator.gpu.getPreferredCanvasFormat();
+        ctx.configure({ device: dev, format: fmt, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC, alphaMode: 'opaque' });
+
+        const smpLinear = dev.createSampler({ magFilter: 'linear', minFilter: 'linear', addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge' });
+        const mod = dev.createShaderModule({ code: WGSL_SHADERS });
+        const info = await mod.getCompilationInfo();
+        for (const m of info.messages) { if (m.type === 'error') (()=>{ const dbg=document.getElementById('wgpu-dbg'); if(dbg){dbg.style.display='block'; dbg.textContent+='WGSL: '+m.message+' line '+m.lineNum+'\n';} throw new Error('WGSL error: '+m.message+' line '+m.lineNum); })(); }
+
+        const bglBlit = dev.createBindGroupLayout({
+          entries: [
+            { binding: 0, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+            { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+          ]
+        });
+        const bglDown = dev.createBindGroupLayout({
+          entries: [
+            { binding: 0, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+            { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+            { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform', minBindingSize: 16 } },
+          ]
+        });
+        const bglBlur = dev.createBindGroupLayout({
+          entries: [
+            { binding: 0, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+            { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+            { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform', minBindingSize: 128 } },
+          ]
+        });
+        const bglVBlur = dev.createBindGroupLayout({
+          entries: [
+            { binding: 0, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+            { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+            { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform', minBindingSize: 48 } },
+          ]
+        });
+        const bglCompose = dev.createBindGroupLayout({
+          entries: [
+            { binding: 0, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+            { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+            { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+            { binding: 3, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform', minBindingSize: 32 } },
+          ]
+        });
+        const bglGlass = dev.createBindGroupLayout({
+          entries: [
+            { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform', hasDynamicOffset: true, minBindingSize: 176 } },
+            { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+            { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+            { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+          ]
+        });
+        const bglQuad = dev.createBindGroupLayout({
+          entries: [
+            { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform', hasDynamicOffset: true, minBindingSize: 64 } },
+            { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+            { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+          ]
+        });
+
+        const pipeBlit = dev.createRenderPipeline({
+          layout: dev.createPipelineLayout({ bindGroupLayouts: [bglBlit] }),
+          vertex: { module: mod, entryPoint: 'vs_full' },
+          fragment: { module: mod, entryPoint: 'fs_blit', targets: [{ format: fmt }] },
+          primitive: { topology: 'triangle-list' }
+        });
+        const pipeDown = dev.createRenderPipeline({
+          layout: dev.createPipelineLayout({ bindGroupLayouts: [bglDown] }),
+          vertex: { module: mod, entryPoint: 'vs_full' },
+          fragment: { module: mod, entryPoint: 'fs_down', targets: [{ format: 'rgba8unorm' }] },
+          primitive: { topology: 'triangle-list' }
+        });
+        const pipeBlur = dev.createRenderPipeline({
+          layout: dev.createPipelineLayout({ bindGroupLayouts: [bglBlur] }),
+          vertex: { module: mod, entryPoint: 'vs_full' },
+          fragment: { module: mod, entryPoint: 'fs_blur', targets: [{ format: 'rgba8unorm' }] },
+          primitive: { topology: 'triangle-list' }
+        });
+        const pipeVBlur = dev.createRenderPipeline({
+          layout: dev.createPipelineLayout({ bindGroupLayouts: [bglVBlur] }),
+          vertex: { module: mod, entryPoint: 'vs_full' },
+          fragment: { module: mod, entryPoint: 'fs_vblur', targets: [{ format: 'rgba8unorm' }] },
+          primitive: { topology: 'triangle-list' }
+        });
+        const pipeCompose = dev.createRenderPipeline({
+          layout: dev.createPipelineLayout({ bindGroupLayouts: [bglCompose] }),
+          vertex: { module: mod, entryPoint: 'vs_full' },
+          fragment: { module: mod, entryPoint: 'fs_compose', targets: [{ format: 'rgba8unorm' }] },
+          primitive: { topology: 'triangle-list' }
+        });
+        const blendPremult = {
+          color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+          alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' }
+        };
+        const blendStraight = {   // glyph canvas is uploaded unpremultiplied; blend it as straight alpha
+          color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+          alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' }
+        };
+        const pipeGlass = dev.createRenderPipeline({
+          layout: dev.createPipelineLayout({ bindGroupLayouts: [bglGlass] }),
+          vertex: { module: mod, entryPoint: 'vs_glass' },
+          fragment: { module: mod, entryPoint: 'fs_glass', targets: [{ format: fmt, blend: blendPremult }] },
+          primitive: { topology: 'triangle-strip' }
+        });
+        const pipeQuad = dev.createRenderPipeline({
+          layout: dev.createPipelineLayout({ bindGroupLayouts: [bglQuad] }),
+          vertex: { module: mod, entryPoint: 'vs_quad' },
+          fragment: { module: mod, entryPoint: 'fs_quad', targets: [{ format: fmt, blend: blendStraight }] },
+          primitive: { topology: 'triangle-strip' }
+        });
+
+        // one uniform buffer per pass: writeBuffer is a queue op, so two writes to one buffer in a frame both pass
+        // see the last value (the horizontal blur would run vertical). Do not merge these back.
+        const uDownTopBuf = dev.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+        const uDownLowBuf = dev.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+        const uBlurHBuf = dev.createBuffer({ size: 128, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+        const uBlurVBuf = dev.createBuffer({ size: 128, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+        const uVBlurHBuf = dev.createBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+        const uVBlurVBuf = dev.createBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+        const uComposeBuf = dev.createBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+        const uGlassBuf = dev.createBuffer({ size: 32 * 256, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+        const uQuadBuf = dev.createBuffer({ size: 256, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+
+        GPU = {
+          dev, ctx, c, fmt, smpLinear,
+          pipeBlit, pipeDown, pipeBlur, pipeVBlur, pipeCompose, pipeGlass, pipeQuad,
+          bglBlit, bglDown, bglBlur, bglVBlur, bglCompose, bglGlass, bglQuad,
+          uDownTopBuf, uDownLowBuf, uBlurHBuf, uBlurVBuf, uVBlurHBuf, uVBlurVBuf, uComposeBuf, uGlassBuf, uQuadBuf,
+          sceneTex: null, finalTex: null, compTex: null, glyphTex: null,
+          lowA: null, lowB: null, lowC: null, lowD: null
+        };
+        GPU_OK = true;
+        window.__wgpuDev = dev; window.__wgpuGPU = GPU;
+        glc.style.display = 'none';
+        c.style.display = 'block';
+        allocGPU();
+        sceneDirty = true;
+        glyphDirty = true;
+        startLoop();
       }
-      function sizeGPU() {
-        if (!GPU) return; const w = cv.width, h = cv.height; GPU.c.width = w; GPU.c.height = h; if (GPU.tex) GPU.tex.destroy();
-        GPU.tex = GPU.dev.createTexture({ size: [w, h], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
-        GPU.bg = GPU.dev.createBindGroup({ layout: GPU.pipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: GPU.smp }, { binding: 1, resource: GPU.tex.createView() }] });
+
+      let lowScaleGPU = 0;
+      function allocGPU() {
+        if (!GPU) return;
+        const cw = glc.width, ch = glc.height, dev = GPU.dev;
+        GPU.c.width = cw; GPU.c.height = ch;
+        [GPU.sceneTex, GPU.finalTex, GPU.compTex].forEach(t => t && t.destroy());
+        GPU.sceneTex = dev.createTexture({ size: [cw, ch], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
+        GPU.finalTex = dev.createTexture({ size: [cw, ch], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC | GPUTextureUsage.RENDER_ATTACHMENT });
+        GPU.compTex = dev.createTexture({ size: [cw, ch], format: GPU.fmt, usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
+        if (!GPU.glyphTex) {
+          GPU.glyphTex = dev.createTexture({ size: [2, 2], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
+        }
+        GPU.bgBlit = dev.createBindGroup({ layout: GPU.bglBlit, entries: [{ binding: 0, resource: GPU.smpLinear }, { binding: 1, resource: GPU.finalTex.createView() }] });
+        GPU.bgDownFinal = dev.createBindGroup({ layout: GPU.bglDown, entries: [{ binding: 0, resource: GPU.smpLinear }, { binding: 1, resource: GPU.finalTex.createView() }, { binding: 2, resource: { buffer: GPU.uDownLowBuf } }] });
+        GPU.bgDownScene = dev.createBindGroup({ layout: GPU.bglDown, entries: [{ binding: 0, resource: GPU.smpLinear }, { binding: 1, resource: GPU.sceneTex.createView() }, { binding: 2, resource: { buffer: GPU.uDownTopBuf } }] });
+        lowScaleGPU = 0;
+        ensureLowGPU();
+        updateGlyphBindGroupsGPU();
       }
-      function renderGPU() {
-        drawContent(); const { dev, ctx, pipe, bg, tex } = GPU; dev.queue.copyExternalImageToTexture({ source: cv }, { texture: tex }, [cv.width, cv.height]);
-        const enc = dev.createCommandEncoder(), pass = enc.beginRenderPass({ colorAttachments: [{ view: ctx.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }] });
-        pass.setPipeline(pipe); pass.setBindGroup(0, bg); pass.draw(3); pass.end(); dev.queue.submit([enc.finish()]);
+
+      function ensureLowGPU() {
+        if (!GPU) return;
+        const sc = P.frost ? Math.min(P.res, FROST_SCALE) : P.res;
+        if (sc === lowScaleGPU && GPU.lowA) return;
+        lowScaleGPU = sc;
+        const cw = glc.width, ch = glc.height, dev = GPU.dev;
+        bw = Math.max(2, Math.round(cw * sc));
+        bh = Math.max(2, Math.round(ch * sc));
+        [GPU.lowA, GPU.lowB, GPU.lowC, GPU.lowD].forEach(t => t && t.destroy());
+        const usage = GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT;
+        GPU.lowA = dev.createTexture({ size: [bw, bh], format: 'rgba8unorm', usage });
+        GPU.lowB = dev.createTexture({ size: [bw, bh], format: 'rgba8unorm', usage });
+        GPU.lowC = dev.createTexture({ size: [bw, bh], format: 'rgba8unorm', usage });
+        GPU.lowD = dev.createTexture({ size: [bw, bh], format: 'rgba8unorm', usage });
+
+        GPU.bgBlurLowA = dev.createBindGroup({ layout: GPU.bglBlur, entries: [{ binding: 0, resource: GPU.smpLinear }, { binding: 1, resource: GPU.lowA.createView() }, { binding: 2, resource: { buffer: GPU.uBlurHBuf } }] });
+        GPU.bgBlurLowB = dev.createBindGroup({ layout: GPU.bglBlur, entries: [{ binding: 0, resource: GPU.smpLinear }, { binding: 1, resource: GPU.lowB.createView() }, { binding: 2, resource: { buffer: GPU.uBlurVBuf } }] });
+        GPU.bgVBlurLowC = dev.createBindGroup({ layout: GPU.bglVBlur, entries: [{ binding: 0, resource: GPU.smpLinear }, { binding: 1, resource: GPU.lowC.createView() }, { binding: 2, resource: { buffer: GPU.uVBlurHBuf } }] });
+        GPU.bgVBlurLowD = dev.createBindGroup({ layout: GPU.bglVBlur, entries: [{ binding: 0, resource: GPU.smpLinear }, { binding: 1, resource: GPU.lowD.createView() }, { binding: 2, resource: { buffer: GPU.uVBlurVBuf } }] });
+        GPU.bgComposeLowC = dev.createBindGroup({ layout: GPU.bglCompose, entries: [{ binding: 0, resource: GPU.smpLinear }, { binding: 1, resource: GPU.sceneTex.createView() }, { binding: 2, resource: GPU.lowC.createView() }, { binding: 3, resource: { buffer: GPU.uComposeBuf } }] });
+        GPU.bgComposeSceneOnly = dev.createBindGroup({ layout: GPU.bglCompose, entries: [{ binding: 0, resource: GPU.smpLinear }, { binding: 1, resource: GPU.sceneTex.createView() }, { binding: 2, resource: GPU.sceneTex.createView() }, { binding: 3, resource: { buffer: GPU.uComposeBuf } }] });
+        updateGlassLowABindGroup();
+        blurDirty = true;
       }
-      function renderFallback() { if (GPU) return renderGPU(); drawContent(); const f = $('#fallbackCv').getContext('2d'); f.setTransform(1, 0, 0, 1, 0, 0); f.drawImage(cv, 0, 0); }
+
+      function updateGlyphBindGroupsGPU() {
+        if (!GPU || !GPU.glyphTex) return;
+        const dev = GPU.dev;
+        GPU.bgQuad = dev.createBindGroup({ layout: GPU.bglQuad, entries: [{ binding: 0, resource: { buffer: GPU.uQuadBuf, size: 64 } }, { binding: 1, resource: GPU.smpLinear }, { binding: 2, resource: GPU.glyphTex.createView() }] });
+        updateGlassLowABindGroup();
+        if (GPU.finalTex) {
+          GPU.bgGlassFinal = dev.createBindGroup({ layout: GPU.bglGlass, entries: [{ binding: 0, resource: { buffer: GPU.uGlassBuf, size: 176 } }, { binding: 1, resource: GPU.smpLinear }, { binding: 2, resource: GPU.finalTex.createView() }, { binding: 3, resource: GPU.glyphTex.createView() }] });
+        }
+        if (GPU.compTex) {
+          GPU.bgGlassComp = dev.createBindGroup({ layout: GPU.bglGlass, entries: [{ binding: 0, resource: { buffer: GPU.uGlassBuf, size: 176 } }, { binding: 1, resource: GPU.smpLinear }, { binding: 2, resource: GPU.compTex.createView() }, { binding: 3, resource: GPU.glyphTex.createView() }] });
+        }
+      }
+
+      function updateGlassLowABindGroup() {
+        if (!GPU || !GPU.lowA || !GPU.glyphTex) return;
+        GPU.bgGlassLowA = GPU.dev.createBindGroup({ layout: GPU.bglGlass, entries: [{ binding: 0, resource: { buffer: GPU.uGlassBuf, size: 176 } }, { binding: 1, resource: GPU.smpLinear }, { binding: 2, resource: GPU.lowA.createView() }, { binding: 3, resource: GPU.glyphTex.createView() }] });
+      }
+
+      let glassItemCount = 0;
+      const f32Glass = new Float32Array(44);
+      function drawGlassItemGPU(pass, it, bg) {
+        if (!GPU || glassItemCount >= 32) return;
+        const k = glassItemCount++;
+        const rad = it.rad ?? Math.min(it.w, it.h) / 2;
+        const tn = it.tint || [0, 0, 0, 0];
+        const sh = it.shadow || [0, 0, 0];
+        const c = it.clip;
+        const f = it.fill || [0, 0, 0, 0];
+
+        f32Glass[0] = W; f32Glass[1] = H;
+        f32Glass[2] = it.margin ?? 58;
+        f32Glass[3] = rad;
+        f32Glass[4] = it.x; f32Glass[5] = it.y; f32Glass[6] = it.w; f32Glass[7] = it.h;
+        f32Glass[8] = tn[0]; f32Glass[9] = tn[1]; f32Glass[10] = tn[2]; f32Glass[11] = tn[3];
+        f32Glass[12] = c ? c[0] : 0; f32Glass[13] = c ? c[1] : 0; f32Glass[14] = c ? c[2] : 0; f32Glass[15] = c ? c[3] : 0;
+        f32Glass[16] = EX.tabs.x; f32Glass[17] = EX.tabs.y; f32Glass[18] = EX.tabs.w; f32Glass[19] = EX.tabs.h;
+        f32Glass[20] = f[0]; f32Glass[21] = f[1]; f32Glass[22] = f[2]; f32Glass[23] = f[3];
+        f32Glass[24] = sh[0]; f32Glass[25] = sh[1]; f32Glass[26] = sh[2];
+        f32Glass[27] = it.op ?? 1;
+        f32Glass[28] = SPR.touch.x; f32Glass[29] = SPR.touch.y; f32Glass[30] = P.glowOn ? SPR.touch.s * P.touchGlow : 0;
+        f32Glass[31] = P.glowNoise ? P.glowNoiseAmt : 0;
+        f32Glass[32] = it.refH || 0;
+        f32Glass[33] = it.refA || 0;
+        f32Glass[34] = it.depth || 0;
+        f32Glass[35] = it.chroma || 0;
+        f32Glass[36] = it.pillDepth || 0;
+        f32Glass[37] = it.hl ?? 1;
+        f32Glass[38] = hlInner;
+        f32Glass[39] = it.zoom || 1;
+        f32Glass[40] = it.edge || 0;
+        f32Glass[41] = it.flat ? 1 : 0;
+        f32Glass[42] = it.useTab ? 1 : 0;
+        f32Glass[43] = it.texFlip || 0;
+
+        GPU.dev.queue.writeBuffer(GPU.uGlassBuf, k * 256, f32Glass);
+        pass.setPipeline(GPU.pipeGlass);
+        pass.setBindGroup(0, bg, [k * 256]);
+        pass.draw(4);
+      }
+
+      const f32Quad = new Float32Array(16);
+      function drawQuadGPU(pass, rect, clip, clipR, alpha, blurPx) {
+        if (!GPU) return;
+        f32Quad[0] = W; f32Quad[1] = H;
+        f32Quad[2] = 0; f32Quad[3] = 0;
+        f32Quad[4] = rect.x; f32Quad[5] = rect.y; f32Quad[6] = rect.w; f32Quad[7] = rect.h;
+        f32Quad[8] = clip.x; f32Quad[9] = clip.y; f32Quad[10] = clip.w; f32Quad[11] = clip.h;
+        f32Quad[12] = clipR; f32Quad[13] = alpha; f32Quad[14] = blurPx; f32Quad[15] = 0;
+        GPU.dev.queue.writeBuffer(GPU.uQuadBuf, 0, f32Quad);
+        pass.setPipeline(GPU.pipeQuad);
+        pass.setBindGroup(0, GPU.bgQuad, [0]);
+        pass.draw(4);
+      }
+
+      const f32Down = new Float32Array(4);
+      const f32Blur = new Float32Array(32);
+      const f32VBlur = new Float32Array(12);
+      const f32Compose = new Float32Array(12);
+
+      function renderWebGPU() {
+        if (!GPU) return;
+        try {
+        const cw = GPU.c.width, ch = GPU.c.height, col = colors(), t = S.t, dev = GPU.dev;
+        if (sceneDirty) {
+          drawContent();
+          dev.queue.copyExternalImageToTexture({ source: cv }, { texture: GPU.sceneTex }, [cw, ch]);
+          sceneDirty = false;
+          blurDirty = true;
+        }
+        if (glyphDirty) {
+          drawGlyphs();
+          const gw = Math.round(EX.tabs.w * DPR), gh = Math.round(EX.tabs.h * DPR);
+          if (GPU.glyphTex.width !== gw || GPU.glyphTex.height !== gh) {
+            GPU.glyphTex.destroy();
+            GPU.glyphTex = dev.createTexture({ size: [gw, gh], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
+            updateGlyphBindGroupsGPU();
+          }
+          dev.queue.copyExternalImageToTexture({ source: gcv }, { texture: GPU.glyphTex }, [gw, gh]);
+          glyphDirty = false;
+        }
+        const frost = P.frost;
+        const enc = dev.createCommandEncoder();
+        glassItemCount = 0;
+
+        if (P.glass) {
+          ensureLowGPU();
+          if (blurDirty) {
+            const on = topBlurOn(), topH = TOP_STRIP_H();
+            if (on) {
+              const sig = 24 * (bw / W), tx = [1 / cw, 1 / ch], dk = Math.max(0, (cw / bw - 1) / 2), reach = 3 * 24 + 4;
+              f32Down[0] = tx[0] * dk; f32Down[1] = tx[1] * dk; f32Down[2] = 1.0;
+              dev.queue.writeBuffer(GPU.uDownTopBuf, 0, f32Down);
+              const pDown = enc.beginRenderPass({ colorAttachments: [{ view: GPU.lowC.createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }] });
+              pDown.setScissorRect(0, 0, bw, clamp(Math.ceil((topH + reach) / H * bh), 1, bh));
+              pDown.setPipeline(GPU.pipeDown);
+              pDown.setBindGroup(0, GPU.bgDownScene);
+              pDown.draw(3);
+              pDown.end();
+
+              f32VBlur[0] = 1 / bw; f32VBlur[1] = 0; f32VBlur[2] = W; f32VBlur[3] = H;
+              f32VBlur[4] = col.bg[0]; f32VBlur[5] = col.bg[1]; f32VBlur[6] = col.bg[2]; f32VBlur[7] = topH; f32VBlur[8] = sig;
+              dev.queue.writeBuffer(GPU.uVBlurHBuf, 0, f32VBlur);
+              const pVbH = enc.beginRenderPass({ colorAttachments: [{ view: GPU.lowD.createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }] });
+              pVbH.setScissorRect(0, 0, bw, clamp(Math.ceil((topH + reach) / H * bh), 1, bh));
+              pVbH.setPipeline(GPU.pipeVBlur);
+              pVbH.setBindGroup(0, GPU.bgVBlurLowC);
+              pVbH.draw(3);
+              pVbH.end();
+
+              f32VBlur[0] = 0; f32VBlur[1] = 1 / bh;
+              dev.queue.writeBuffer(GPU.uVBlurVBuf, 0, f32VBlur);
+              const pVbV = enc.beginRenderPass({ colorAttachments: [{ view: GPU.lowC.createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }] });
+              pVbV.setScissorRect(0, 0, bw, clamp(Math.ceil(topH / H * bh), 1, bh));
+              pVbV.setPipeline(GPU.pipeVBlur);
+              pVbV.setBindGroup(0, GPU.bgVBlurLowD);
+              pVbV.draw(3);
+              pVbV.end();
+            }
+
+            f32Compose[0] = W; f32Compose[1] = H; f32Compose[2] = FLOOR + 254; f32Compose[3] = topH;
+            f32Compose[4] = col.bg[0]; f32Compose[5] = col.bg[1]; f32Compose[6] = col.bg[2]; f32Compose[7] = on ? 1.0 : 0.0;
+            dev.queue.writeBuffer(GPU.uComposeBuf, 0, f32Compose);
+            const pComp = enc.beginRenderPass({ colorAttachments: [{ view: GPU.finalTex.createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }] });
+            pComp.setPipeline(GPU.pipeCompose);
+            pComp.setBindGroup(0, on ? GPU.bgComposeLowC : GPU.bgComposeSceneOnly);
+            pComp.draw(3);
+            pComp.end();
+
+            const tex1 = [1 / cw, 1 / ch], sig = (frost ? FROST_BLUR : P.blur) * (bw / W);
+            const reach = 3 * sig * (H / bh) + 2, mr_ = menuRects().full, mg = 72;
+            const topEnd = mr_.y + mr_.h + mg, botStart = Math.min(EX.acc.y, IN.acc.y, EX.tabs.y, IN.tab.y, EX.search.y, IN.search.y, EX.tabs.y - PILL_GROW) - mg;
+            const strips = botStart <= topEnd + 2 * reach ? [[0, H]] : [[0, topEnd], [botStart, H]];
+
+            for (let si = 0; si < strips.length; si++) {
+              const [y0, y1] = strips[si];
+              const a0 = clamp(Math.floor((y0 - reach) / H * bh), 0, bh);
+              const a1 = clamp(Math.ceil((y1 + reach) / H * bh), 0, bh);
+              const dk = Math.max(0, (cw / bw - 1) / 2);
+
+              f32Down[0] = tex1[0] * dk; f32Down[1] = tex1[1] * dk; f32Down[2] = 1 + 0.5 * P.vib;
+              dev.queue.writeBuffer(GPU.uDownLowBuf, 0, f32Down);
+              const pD = enc.beginRenderPass({ colorAttachments: [{ view: GPU.lowA.createView(), loadOp: si === 0 ? 'clear' : 'load', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }] });
+              pD.setScissorRect(0, a0, bw, Math.max(1, a1 - a0));
+              pD.setPipeline(GPU.pipeDown);
+              pD.setBindGroup(0, GPU.bgDownFinal);
+              pD.draw(3);
+              pD.end();
+
+              blurWeights(sig);
+              f32Blur[0] = 1 / bw; f32Blur[1] = 0; f32Blur[2] = blurPrm.lim; f32Blur[3] = blurPrm.stp;
+              for (let i = 0; i <= 24; i++) f32Blur[4 + i] = blurW[i];
+              dev.queue.writeBuffer(GPU.uBlurHBuf, 0, f32Blur);
+              const pBH = enc.beginRenderPass({ colorAttachments: [{ view: GPU.lowB.createView(), loadOp: si === 0 ? 'clear' : 'load', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }] });
+              pBH.setScissorRect(0, a0, bw, Math.max(1, a1 - a0));
+              pBH.setPipeline(GPU.pipeBlur);
+              pBH.setBindGroup(0, GPU.bgBlurLowA);
+              pBH.draw(3);
+              pBH.end();
+
+              const b0 = clamp(Math.floor(y0 / H * bh), 0, bh);
+              const b1 = clamp(Math.ceil(y1 / H * bh), 0, bh);
+              f32Blur[0] = 0; f32Blur[1] = 1 / bh;
+              dev.queue.writeBuffer(GPU.uBlurVBuf, 0, f32Blur);
+              const pBV = enc.beginRenderPass({ colorAttachments: [{ view: GPU.lowA.createView(), loadOp: 'load', storeOp: 'store' }] });
+              pBV.setScissorRect(0, b0, bw, Math.max(1, b1 - b0));
+              pBV.setPipeline(GPU.pipeBlur);
+              pBV.setBindGroup(0, GPU.bgBlurLowB);
+              pBV.draw(3);
+              pBV.end();
+            }
+            blurDirty = false;
+          }
+        } else if (blurDirty) {
+          const on = topBlurOn(), topH = TOP_STRIP_H();
+          f32Compose[0] = W; f32Compose[1] = H; f32Compose[2] = FLOOR + 254; f32Compose[3] = topH;
+          f32Compose[4] = col.bg[0]; f32Compose[5] = col.bg[1]; f32Compose[6] = col.bg[2]; f32Compose[7] = on ? 1.0 : 0.0;
+          dev.queue.writeBuffer(GPU.uComposeBuf, 0, f32Compose);
+          const pComp = enc.beginRenderPass({ colorAttachments: [{ view: GPU.finalTex.createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }] });
+          pComp.setPipeline(GPU.pipeCompose);
+          pComp.setBindGroup(0, GPU.bgComposeSceneOnly);
+          pComp.draw(3);
+          pComp.end();
+          blurDirty = false;
+        }
+
+        const screenTexture = GPU.ctx.getCurrentTexture();
+        const screenView = screenTexture.createView();
+        const pMain = enc.beginRenderPass({
+          colorAttachments: [{ view: screenView, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }]
+        });
+        pMain.setPipeline(GPU.pipeBlit);
+        pMain.setBindGroup(0, GPU.bgBlit);
+        pMain.draw(3);
+
+        if (!P.glass) {
+          pMain.end();
+          dev.queue.submit([enc.finish()]);
+          return;
+        }
+
+        const tint = [...col.tint, P.tint];
+        const surf = (r, extra) => Object.assign({ x: r.x, y: r.y, w: r.w, h: r.h, tint, shadow: [24, 4, .1], hl: 1 }, !frost ? { refH: P.lensH * LENS_MAX, refA: P.lensA * LENS_MAX, depth: P.depth ? 1 : 0, pillDepth: P.pillDepth ? 1 : 0, chroma: P.chroma ? 1 : 0 } : {}, extra);
+        const amt = k => clamp((SPR[k].x - 1) / Math.max(.001, P.pressScale - 1), 0, 1);
+        const items = [surf(L.back, { edge: 1, hl: 1 + amt('back') }), surf(L.tabs), surf(L.search, { hl: 1 + amt('srch') }), surf(L.acc)];
+        {
+          const mk = clamp(L.menuM, 0, 1);
+          items.push(surf(L.menu, { rad: L.menuRad, edge: 1, hl: 1 + amt('act'), shadow: [24 + 8 * mk, 4 + 4 * mk, .1 + .06 * mk], margin: 80 }));
+        }
+
+        if (S.nav.length && GT.length) {
+          for (const g of GT) {
+            const st = GS[g.id]; if (!st) continue; const cym = (g.kind === 'sw' ? g.ty + 14 : g.cy) - S.scrollY; if (cym < -40 || cym > H + 40) continue;
+            const pr = clamp(st.p, 0, 1.2), pc = clamp(pr, 0, 1), tg = g.kind === 'sw' ? thumbGeo(g.tx + swCx(st.x), cym, pr) : sliderGeo(g.frac, cym, pr, g.x0, g.w), h = tg.h, zr = thumbRamp(cym); if (pc < .01 || zr <= 0) continue;
+            drawGlassItemGPU(pMain, surf({ x: tg.x, y: tg.y, w: tg.w, h: tg.h }, { tint: [1, 1, 1, lerp(.95, .1, pc)], ...(frost ? {} : { refH: Math.min(h / 2 - 1, 11), refA: 16 * (P.lensA / .5) * pc, chroma: pc > .3 ? 1 : 0, depth: 0 }), shadow: [8, 2, .2 + .1 * pc], margin: 24, hl: 1, op: zr }), GPU.bgGlassFinal);
+          }
+        }
+
+        for (const it of items) drawGlassItemGPU(pMain, it, GPU.bgGlassLowA);
+
+        const pillOn = S.tab < NT, pe = clamp(1 - t * 3, 0, 1), base = S.dark ? .14 : .5;
+        const tw = tabW(), rh = rowH(), liftH = rh + 2 * PILL_INSET + PILL_GROW, liftW = liftH * tw / rh;
+        const lw = (tw + (liftW - tw) * pill.liftX) * (1 + pill.deviation), lh = (rh + (liftH - rh) * pill.liftY) * (1 - pill.deviation);
+        const pcx = EX.tabs.x + PILL_INSET + pill.position * tw + tw / 2, pcy = EX.tabs.y + PILL_INSET + rh / 2;
+        const pr = R(pcx - lw / 2, pcy - lh / 2, lw, lh), pclip = t > .001 ? [L.tabs.x, L.tabs.y, L.tabs.w, L.tabs.h] : null;
+        const glassPill = !frost && P.glass && !pill.isFlat;
+
+        if (pillOn && pe > 0 && !glassPill) {
+          drawGlassItemGPU(pMain, { ...pr, clip: pclip, flat: 1, tint: [1, 1, 1, base], op: pe, margin: 2 }, GPU.bgGlassLowA);
+        }
+        pMain.end();
+
+        if (pillOn && pe > 0 && glassPill) {
+          const m = 64, ytop = Math.max(0, Math.floor((Math.min(EX.tabs.y, L.tabs.y) - m - PILL_GROW) * DPR));
+          const ybot = Math.min(ch, Math.ceil((Math.max(EX.tabs.y + EX.tabs.h, L.tabs.y + L.tabs.h) + m + PILL_GROW) * DPR));
+          const copyH = Math.max(1, Math.min(ch - ytop, ybot - ytop));
+          enc.copyTextureToTexture({ texture: screenTexture, origin: { x: 0, y: ytop, z: 0 } }, { texture: GPU.compTex, origin: { x: 0, y: ytop, z: 0 } }, { width: cw, height: copyH, depthOrArrayLayers: 1 });
+        }
+
+        const pTop = enc.beginRenderPass({
+          colorAttachments: [{ view: screenView, loadOp: 'load', storeOp: 'store' }]
+        });
+
+        if (pe > 0) {
+          drawQuadGPU(pTop, EX.tabs, L.tabs, Math.min(L.tabs.w, L.tabs.h) / 2, pe, P.iconBlur ? (1 - pe) * P.iconBlurPx : 0);
+        }
+
+        if (pillOn && pe > 0 && glassPill) {
+          const m = pill.material, rim = m * clamp((pill.glassPresence - .45) / .55, 0, 1);
+          drawGlassItemGPU(pTop, {
+            ...pr, clip: pclip, margin: 32, refH: 12 * pill.glassPresence, refA: 14 * m, chroma: 1, depth: 0, useTab: 1, tint: [0, 0, 0, 0],
+            fill: [1, 1, 1, base], hl: rim, shadow: [12, 2, .3 * rim], op: pe, zoom: 1 + (P.lensZoom - 1) * m
+          }, GPU.bgGlassComp);
+        }
+        pTop.end();
+
+        dev.queue.submit([enc.finish()]);
+        // async pixel readback for verification (runs every 60 frames)
+        if (typeof window.__gpuFrameN === 'undefined') window.__gpuFrameN = 0;
+        if (++window.__gpuFrameN % 60 === 1) {
+          (async () => {
+            try {
+              const rb = dev.createBuffer({ size: 256, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+              const tex = GPU.finalTex;
+              const enc2 = dev.createCommandEncoder();
+              enc2.copyTextureToBuffer({ texture: tex, origin: { x: Math.floor(tex.width/2), y: Math.floor(tex.height/2) } }, { buffer: rb, bytesPerRow: 256 }, { width: 1, height: 1 });
+              dev.queue.submit([enc2.finish()]);
+              await rb.mapAsync(GPUMapMode.READ);
+              const px = Array.from(new Uint8Array(rb.getMappedRange().slice(0, 4)));
+              rb.unmap(); rb.destroy();
+              document.body.dataset.gpuPx = JSON.stringify(px);
+              document.body.dataset.gpuFrame = window.__gpuFrameN;
+            } catch(e) { document.body.dataset.gpuPxErr = e.message; }
+          })();
+        }
+        } catch(e) { console.error('renderWebGPU crash:', e); const dbg = document.getElementById('wgpu-dbg'); if (dbg) { dbg.style.display = 'block'; dbg.textContent += 'renderWebGPU: ' + e.message + '\n'; } }
+      }
+      function renderFallback() { drawContent(); const fcv = $('#fallbackCv'); if (!fcv) return; const f = fcv.getContext('2d'); f.setTransform(1, 0, 0, 1, 0, 0); f.drawImage(cv, 0, 0); }
 
       /* ============ input ============ */
       let vel = 0, drag = null, acc = 0;
@@ -1801,7 +2696,9 @@ void main(){
         if (!pill.isFlat || pill.travelActive || pill.dragging) { pill.stepPx = tabW(); pill.tick(dt, now / 1000); active = true; }
         if (active || needsRender || sceneDirty) {
           const hp0 = performance.now(); applyDOM(); const hp1 = performance.now(); PF.dom += hp1 - hp0;
-          if (GL_OK) {
+          if (GPU_OK) {
+            const hr0 = performance.now(); renderWebGPU(); PF.render += performance.now() - hr0;
+          } else if (GL_OK) {
             if (HIC && sceneDirty) { pageInner.style.transform = `translateY(${-S.scrollY}px)`; if (typeof glc.requestPaint === 'function') glc.requestPaint(); }
             gpuBegin(); const hr0 = performance.now(); render(); PF.render += performance.now() - hr0; gpuEnd(); selfCheck();
           } else renderFallback();
@@ -1812,7 +2709,7 @@ void main(){
           window.__fps = fN;
           if (P.hud) {
             const h = $('#hud'), n = Math.max(1, fN), pg = S.nav.length ? pageTitle() : TITLES[S.tab] || '';
-            h.textContent = `fps ${fN}  page ${pg}\ncpu/frame  dom ${(PF.dom / n).toFixed(1)}  build ${(PF.build / n).toFixed(1)}  render ${(PF.render / n).toFixed(1)} ms\ngpu/frame  ${TQ && PF.gn ? (PF.gpu / PF.gn).toFixed(1) + ' ms' : (TQ === false ? 'n/a (no timer query)' : '…')}\n${HIC ? 'HIC' : GL_OK ? 'canvas' : 'no-GL'}  ${glc.width}x${glc.height}  DOM nodes ${pageInner.querySelectorAll('*').length}`;
+            h.textContent = `fps ${fN}  page ${pg}\ncpu/frame  dom ${(PF.dom / n).toFixed(1)}  build ${(PF.build / n).toFixed(1)}  render ${(PF.render / n).toFixed(1)} ms\ngpu/frame  ${TQ && PF.gn ? (PF.gpu / PF.gn).toFixed(1) + ' ms' : (TQ === false ? 'n/a (no timer query)' : '…')}\n${GPU_OK ? 'WebGPU' : HIC ? 'HIC' : GL_OK ? 'canvas' : 'no-GL'}  ${glc.width}x${glc.height}  DOM nodes ${pageInner.querySelectorAll('*').length}`;
           }
           PF.dom = PF.build = PF.render = PF.gpu = PF.gn = 0; fN = 0; fT = now;
         }
@@ -1837,7 +2734,9 @@ void main(){
         W = phone.clientWidth; H = phone.clientHeight; buildLayoutX(); buildTop(); setR($('#topBack'), topBack); setR($('#topActions'), topActions); setVertical();
         pageEl.style.width = pageInner.style.width = W + 'px';
         glc.width = Math.round(W * DPR); glc.height = Math.round(H * DPR); cv.width = glc.width; cv.height = glc.height; pageEl.style.height = H + 'px';
-        if (GL_OK) allocGL(); else { const f = $('#fallbackCv'); f.width = cv.width; f.height = cv.height; sizeGPU(); }
+        if (GPU_OK) allocGPU();
+        if (GL_OK) allocGL();
+        if (!GPU_OK && !GL_OK) { const f = $('#fallbackCv'); if (f) { f.width = cv.width; f.height = cv.height; } }
         buildPrims(); if (HIC) { buildDOM(); hicOK = false; if (typeof glc.requestPaint === 'function') glc.requestPaint(); }
         glyphDirty = true; sceneDirty = true; startLoop();
       }
@@ -1871,33 +2770,72 @@ void main(){
       $('#gear').addEventListener('click', () => $('#panel').classList.toggle('open'));
 
       /* ============ boot ============ */
-      try { if (!WANT_GL) throw new Error(WANT_GPU ? 'WebGPU dipilih' : 'Canvas dipilih'); if (!GL_OK) throw new Error('WebGL2 tidak tersedia'); initGL(); HIC = detectHIC(); }
-      catch (err) { console.error(err); GL_OK = false; HIC = null; const f = document.createElement('canvas'); f.id = 'fallbackCv'; phone.insertBefore(f, glc); glc.style.display = 'none'; initFallbackUI(); }
-      glc.addEventListener('webglcontextlost', e => { e.preventDefault(); enterFallback('konteks WebGL hilang'); });
-      if (HIC) {
-        setTimeout(() => { if (HIC && !hicOK) { console.warn('HTML-in-Canvas: no paint, using canvas'); HIC = null; sceneDirty = true; $('#src').textContent = 'Canvas replika (HTML-in-Canvas tidak merespons)' + diagText(); startLoop(); } }, 2500);
-        glc.addEventListener('paint', () => { try { hicUpload(); sceneDirty = true; blurDirty = true; needsRender = true; startLoop(); } catch (e) { console.error('HTML-in-Canvas gagal, pakai canvas:', e); HIC = null; hicOK = false; sceneDirty = true; $('#src').textContent = 'Canvas replika (HTML-in-Canvas gagal)'; startLoop(); } });
-      }
-      $('#src').textContent = (HIC ? `DOM live via HTML-in-Canvas (${HIC === 'new' ? 'Chrome 155+' : 'Chrome 150–154'})` : (GL_OK ? 'Canvas replika (HTML-in-Canvas tidak aktif di browser ini)' : 'Tanpa WebGL2: blur CSS saja (tanpa lensa/refraksi)')) + diagText();
-      if (WANT_GPU) initWebGPU().then(() => { $('#src').textContent = 'WebGPU (tahap awal: halaman saja, lensa glass/blur masih WebGL2)' + diagText(); }, e => skipGPU(e.message));
-      if (RPICK === 'canvas') $('#src').textContent = 'Canvas 2D (dipilih manual): blur CSS saja, tanpa lensa/refraksi' + diagText(); else if (WANT_GPU) $('#src').textContent = 'WebGPU: memulai…';
-      else if (RPICK === 'webgpu') console.warn('WebGPU tidak dipakai di sesi ini, memakai ' + (GL_OK ? 'WebGL2' : 'Canvas 2D'));
-      setThemeMode(ST.themeMode); resize(); addEventListener('resize', resize);
-      if (GL_OK) $('#src').textContent = $('#src').textContent.replace(/ · DPR.*$/, '') + diagText();      // size is only known after the first resize()
-      if (DEBUG) window.__api = { buildDOM, applyDOM, S, ST, P, pill, SPR, openPage, popPage, HITS: () => HITS, setTab, setTheme, setScroll, startLoop, get HIC() { return HIC; }, hicOK: () => hicOK };
-      if (/[?&]test\b/.test(location.search)) {          // tes kecil perhitungan slider: console menampilkan 'slider test ok' atau FAIL
-        const x0 = 16, w = 326, bad = [];
-        for (const f of [0, .25, .5, 1]) {
-          const g = sliderGeo(f, 0, 0, x0, w), back = slFrac(slTx(f, x0, w), x0, w);
-          if (f === 0 && Math.abs(g.x - x0) > .01) bad.push('ujung kiri'); if (f === 1 && Math.abs(g.x + g.w - (x0 + w)) > .01) bad.push('ujung kanan'); if (Math.abs(back - f) > 1e-9) bad.push('jari->nilai ' + f);
+      function bootFallback(reason) {
+        GL_OK = false;
+        HIC = null;
+        let f = $('#fallbackCv');
+        if (!f) {
+          f = document.createElement('canvas');
+          f.id = 'fallbackCv';
+          phone.insertBefore(f, glc);
         }
-        const fl = slFill(0, slTx(0, x0, w) - x0, w), fr = slFill(1, slTx(1, x0, w) - x0, w); if (fl !== 0 || Math.abs(fr - w) > .01) bad.push('putih track di ujung');
-        for (const [pk, sk, gpu, glx] of [['auto', 0, 0, 1], ['auto', 1, 0, 1], ['webgpu', 0, 1, 0], ['webgpu', 1, 0, 1], ['webgl2', 0, 0, 1], ['webgl2', 1, 0, 1], ['canvas', 0, 0, 0], ['canvas', 1, 0, 0]]) { const r = pickRenderer(pk, !!sk); if (r.gpu !== !!gpu || r.gl !== !!glx) bad.push('renderer ' + pk + '/' + sk); }
-        console[bad.length ? 'error' : 'log'](bad.length ? 'test FAIL: ' + bad.join(', ') : 'test ok (slider + renderer)');
+        glc.style.display = 'none';
+        if (GPU && GPU.c) GPU.c.style.display = 'none';
+        initFallbackUI();
+        $('#src').textContent = 'Canvas 2D: blur CSS saja, tanpa lensa/refraksi' + (reason ? ' (' + reason + ')' : '') + diagText();
       }
-      window.__ready = true;
-    })();
+
+      function bootWebGL() {
+        try {
+          if (!gl) throw new Error('WebGL2 tidak tersedia');
+          initGL();
+          HIC = detectHIC();
+          glc.addEventListener('webglcontextlost', e => { e.preventDefault(); enterFallback('konteks WebGL hilang'); });
+          if (HIC) {
+            setTimeout(() => { if (HIC && !hicOK) { console.warn('HTML-in-Canvas: no paint, using canvas'); HIC = null; sceneDirty = true; $('#src').textContent = 'Canvas replika (HTML-in-Canvas tidak merespons)' + diagText(); startLoop(); } }, 2500);
+            glc.addEventListener('paint', () => { try { hicUpload(); sceneDirty = true; blurDirty = true; needsRender = true; startLoop(); } catch (e) { console.error('HTML-in-Canvas gagal, pakai canvas:', e); HIC = null; hicOK = false; sceneDirty = true; $('#src').textContent = 'Canvas replika (HTML-in-Canvas gagal)'; startLoop(); } });
+          }
+          $('#src').textContent = (HIC ? 'DOM live via HTML-in-Canvas (' + (HIC === 'new' ? 'Chrome 155+' : 'Chrome 150–154') + ')' : 'Canvas replika (HTML-in-Canvas tidak aktif di browser ini)') + diagText();
+          startLoop();
+        } catch (err) {
+          console.error('WebGL2 gagal:', err);
+          bootFallback(err.message);
+        }
+      }
+
+      if (WANT_GPU) {
+        $('#src').textContent = 'WebGPU: memulai…';
+        initWebGPU().then(() => {
+          $('#src').textContent = 'WebGPU (pipeline penuh: lensa glass, refraksi & blur WGSL)' + diagText();
+          resize();
+        }).catch(e => {
+          console.error('WebGPU gagal:', e);
+          if (GPU && GPU.c) GPU.c.style.display = 'none';
+          glc.style.display = 'block';
+          skipGPU(e.message);
+        });
+      } else if (WANT_GL) {
+        bootWebGL();
+      } else {
+        bootFallback('dipilih manual');
+      }
+      setThemeMode(ST.themeMode); resize(); addEventListener('resize', resize);
+        if (GL_OK) $('#src').textContent = $('#src').textContent.replace(/ · DPR.*$/, '') + diagText();      // size is only known after the first resize()
+        if (DEBUG) window.__api = { buildDOM, applyDOM, S, ST, P, pill, SPR, openPage, popPage, HITS: () => HITS, setTab, setTheme, setScroll, startLoop, get HIC() { return HIC; }, hicOK: () => hicOK };
+        if (/[?&]test\b/.test(location.search)) {          // tes kecil perhitungan slider: console menampilkan 'slider test ok' atau FAIL
+          const x0 = 16, w = 326, bad = [];
+          for (const f of [0, .25, .5, 1]) {
+            const g = sliderGeo(f, 0, 0, x0, w), back = slFrac(slTx(f, x0, w), x0, w);
+            if (f === 0 && Math.abs(g.x - x0) > .01) bad.push('ujung kiri'); if (f === 1 && Math.abs(g.x + g.w - (x0 + w)) > .01) bad.push('ujung kanan'); if (Math.abs(back - f) > 1e-9) bad.push('jari->nilai ' + f);
+          }
+          const fl = slFill(0, slTx(0, x0, w) - x0, w), fr = slFill(1, slTx(1, x0, w) - x0, w); if (fl !== 0 || Math.abs(fr - w) > .01) bad.push('putih track di ujung');
+          for (const [pk, sk, gpu, glx] of [['auto', 0, 0, 1], ['auto', 1, 0, 1], ['webgpu', 0, 1, 0], ['webgpu', 1, 0, 1], ['webgl2', 0, 0, 1], ['webgl2', 1, 0, 1], ['canvas', 0, 0, 0], ['canvas', 1, 0, 0]]) { const r = pickRenderer(pk, !!sk); if (r.gpu !== !!gpu || r.gl !== !!glx) bad.push('renderer ' + pk + '/' + sk); }
+          console[bad.length ? 'error' : 'log'](bad.length ? 'test FAIL: ' + bad.join(', ') : 'test ok (slider + renderer)');
+        }
+        window.__ready = true;
+      }) ();
   </script>
+<div id="wgpu-dbg"></div>
 </body>
 
 </html>
