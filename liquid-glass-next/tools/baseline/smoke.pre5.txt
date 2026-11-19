@@ -1,0 +1,5 @@
+READY true
+DIAG {"ready":true,"fallback":true,"glDisplay":"none","src":"Canvas 2D: blur CSS saja, tanpa lensa/refraksi (WebGL2 tidak tersedia)","tabsFb":true,"accHit":false,"menuClass":"abs fbg shut","canvas":[500,844]}
+ERRORS [
+ "ERROR WebGL2 gagal: Error: WebGL2 tidak tersedia\n    at bootWebGL (file:///storage/emulated/0/Download/liquid-ass-html/liquid-glass-ios-kit-v2.html?debug:2791:26)\n    at file:///storage/emulated/0/Download/liquid-ass-html/liquid-glass-ios-kit-v2.html?debug:2819:9\n    at file:///storage/emulated/0/Download/liquid-ass-html/liquid-glass-ios-kit-v2.html?debug:2837:10"
+]

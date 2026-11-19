@@ -1,0 +1,14 @@
+{
+  "name": "liquid-glass-next",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --filter web dev",
+    "build": "pnpm --filter web build",
+    "start": "pnpm --filter web start",
+    "check:fold": "node tools/fold-check.mjs",
+    "probe:smoke": "sh tools/run-smoke.sh",
+    "probe:menu": "sh tools/run-menu-probe.sh",
+    "probe:fold": "sh tools/run-fold-probe.sh",
+    "probe:acc": "sh tools/run-probe-acc.sh"
+  }
+}

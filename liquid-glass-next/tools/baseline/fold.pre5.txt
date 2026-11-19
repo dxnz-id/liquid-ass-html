@@ -1,0 +1,7 @@
+BASE    {"t0":4533.4000000059605,"top":705,"w":462}
+COLLAPSE {"top":768,"w":320} (top naik + width turun = benar)
+EXPAND  final {"top":705,"w":462} roundtrip_ok= true
+EXPAND  max dTop/frame= 18.2 px @frame 1 | max dW/frame= 23.7 px @frame 3
+EXPAND  width mulai bergerak di frame 0 | top travel saat itu = 0%
+EXPAND  max dead-frame berturut (belum settle, dua-duanya diam) = 0
+ERRORS []

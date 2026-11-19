@@ -1,0 +1,26 @@
+TIMELINE (t, menuOpen, inline display):
+   [4542,false,"none"]
+   [4613,false,"none"]
+   [4689,false,"none"]
+   [4756,false,"none"]
+   [4829,false,"none"]
+   [4905,false,"none"]
+   [4966,false,"none"]
+   [5023,false,"none"]
+   [5088,false,"none"]
+   [5151,false,"none"]
+   [5219,false,"none"]
+   [5276,false,"none"]
+   [5333,false,"none"]
+   [5391,false,"none"]
+   [5448,false,"none"]
+   [5510,false,"none"]
+   [5571,false,"none"]
+   [5626,false,"none"]
+   [5682,false,"none"]
+   [5738,false,"none"]
+BUKA      -> menuOpen: true | scrim display: block
+KLIK LUAR -> menuOpen: false | scrim: none
+KLIK ITEM -> menuOpen: false
+RESULT PASS: klik luar nutup menu, klik item juga nutup
+ERRORS []

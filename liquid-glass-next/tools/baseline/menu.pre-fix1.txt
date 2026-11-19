@@ -1,0 +1,26 @@
+TIMELINE (t, menuOpen, inline display):
+   [10595,false,""]
+   [10659,false,""]
+   [10717,false,""]
+   [10778,false,""]
+   [10839,false,""]
+   [10913,false,""]
+   [10976,false,""]
+   [11032,false,""]
+   [11090,false,""]
+   [11146,false,""]
+   [11201,false,""]
+   [11259,false,""]
+   [11315,false,""]
+   [11372,false,""]
+   [11434,false,""]
+   [11492,false,""]
+   [11548,false,""]
+   [11605,false,""]
+   [11674,false,""]
+   [11730,false,""]
+BUKA      -> menuOpen: true | scrim display: none
+KLIK LUAR -> menuOpen: false | scrim: none
+KLIK ITEM -> menuOpen: false
+RESULT FAIL
+ERRORS []

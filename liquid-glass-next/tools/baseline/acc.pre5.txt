@@ -1,0 +1,5 @@
+BEFORE {"playAt":{},"nextAt":{},"playRect":[385,709,40,40],"a11yTabsChildren":4,"tabHitRole":null,"sel":"false,false,true,false","playing":true,"tab":2,"title":"Midnight Static"}
+AFTER_PLAY false
+AFTER_NEXT_TITLE Paper Moons
+AFTER_TAB {"tab":0,"sel":"true,false,false,false"}
+ERRORS ["ERR WebGL2 gagal: Error: WebGL2 tidak tersedia\n    at bootWebGL (file:///storage/emulated/0/Download/liquid-ass-html/liquid-glass-ios-kit-v2.html?debug:2791:26)\n    at file:///storage/emulated/0/Download/liquid-ass-html/liquid-glass-ios-kit-v2.html?debug:2819:9\n    at file:///storage/emulated/0/Download/liquid-ass-html/liquid-glass-ios-kit-v2.html?debug:2837:10"]

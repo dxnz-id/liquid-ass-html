@@ -1,0 +1,1548 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Liquid Glass — iOS Navigation Kit v2</title>
+<!--
+  Liquid glass renderer (WebGL2 + WebGPU).
+
+  Ported from Kyant0/backdrop v2.0.0 (Apache License 2.0, Copyright 2025 Kyant0,
+  https://github.com/Kyant0/backdrop): rounded-rect SDF + gradient, lens refraction with depth
+  effect, 7-tap chromatic dispersion, directional rim highlight, saturation color matrix.
+
+  Geometry, constants and motion come from kushagrasinghx/BitChord (GlassNavBar, FloatingTabBar,
+  GlassSelectionPill, FrostedTopBar, LiquidGlass, BottomFadeScrim; TopFadeBlur is not ported), which in turn
+  vendors FloatingTabBar by Elyes Mansour (Apache-2.0) and adapts Echo-Music's glass wiring.
+  Only numbers and behaviour are reproduced here, not their Kotlin source.
+
+  LICENSING (this needs verification by a lawyer; I am not one):
+  - The shader maths (rounded-rect SDF, lens refraction, chromatic dispersion, highlight, saturation matrix) is a port of
+    Kyant0/backdrop, licensed under the Apache License 2.0 (http://www.apache.org/licenses/LICENSE-2.0). It was changed:
+    translated from Kotlin/AGSL to GLSL ES 3.00 and JavaScript. Copyright 2025 Kyant0 stays with that part.
+  - The layout, numbers, motion constants and the Settings texts come from BitChord, which is licensed GPL-3.0
+    (https://github.com/kushagrasinghx/BitChord/blob/main/LICENSE). Treat this whole file as a derivative work of
+    BitChord: distribute it under GPL-3.0 (Apache-2.0 code can be included in a GPL-3.0 work), or replace those parts.
+  - No Kotlin source is copied verbatim. User-facing texts in Settings are copied from BitChord's strings.xml.
+-->
+<style>
+:root{--accent:#fa2d48}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%}
+body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Inter","Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  background:radial-gradient(1200px 700px at 30% 0%,#23252c 0,#0d0e11 60%);color:#e8e8ea;
+  display:flex;align-items:center;justify-content:center;gap:36px;min-height:100vh;padding:20px}
+.phone{position:relative;width:390px;height:844px;flex:none;border-radius:54px;overflow:hidden;background:#000;
+  box-shadow:0 0 0 10px #15161a,0 0 0 11px #3b3c43,0 50px 90px rgba(0,0,0,.55);isolation:isolate;
+  user-select:none;-webkit-user-select:none;touch-action:none;--fg:#fff}
+.phone.light{--fg:#000}
+#gl{position:absolute;inset:0;width:100%;height:100%;display:block}
+#fallbackCv{position:absolute;inset:0;width:100%;height:100%;display:block}
+/* HTML-in-Canvas page: laid out inside the canvas, painted only through the canvas */
+#page{position:absolute;left:0;top:0;width:390px;height:844px;overflow:hidden}
+#pageInner{position:absolute;left:0;top:0;width:390px;will-change:transform}
+#pageInner>*,#pageInner>*>*{position:absolute;white-space:nowrap;line-height:1}
+#hit{position:absolute;inset:0;z-index:1;cursor:grab}
+.status{position:absolute;z-index:8;top:0;left:0;right:0;height:54px;display:flex;justify-content:space-between;align-items:center;
+  padding:6px 30px 0 40px;color:var(--fg);pointer-events:none;font-weight:600;font-size:16px;letter-spacing:-.2px}
+.status .ic{display:flex;gap:6px;align-items:center}
+.home{position:absolute;z-index:8;left:50%;bottom:7px;width:134px;height:5px;margin-left:-67px;border-radius:3px;background:var(--fg);opacity:.92;pointer-events:none}
+.abs{position:absolute;z-index:4;color:var(--fg);pointer-events:none}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer}
+svg{display:block;overflow:visible}
+.ico{stroke:currentColor;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
+.ico .f{fill:currentColor;stroke:none}
+.center{display:grid;place-items:center}
+@keyframes tin{from{filter:blur(var(--ibp,6px));opacity:0}to{filter:blur(0);opacity:1}}
+.tt.tin{animation:tin .28s ease-out}
+#topTitle{left:0;right:0;top:54px;height:52px;display:grid;place-items:center;font-size:16px;font-weight:600;letter-spacing:.1px;opacity:0}
+#topActions{display:flex;align-items:center}
+#acc{z-index:7;display:flex;align-items:center;overflow:visible;transform-origin:center;pointer-events:auto}
+#acc .art{flex:none;width:30.4px;height:30.4px;border-radius:5.7px;background:conic-gradient(from 210deg,#ff5f6d,#ffc371,#7b5cff,#ff5f6d)}
+#acc .meta{flex:1;min-width:0;margin-left:9px;overflow:hidden;white-space:nowrap;-webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 22px),transparent);mask-image:linear-gradient(90deg,#000 calc(100% - 22px),transparent)}
+#acc .t{font-size:13px;font-weight:700;letter-spacing:.15px;line-height:16px}
+#acc .a{font-size:12px;letter-spacing:.35px;line-height:15px;opacity:.7}
+#acc button{flex:none;display:grid;place-items:center;pointer-events:auto}
+#accNext{overflow:hidden}
+.hit{position:absolute;z-index:6}
+#a11y,#a11yTabs{position:absolute;left:0;top:0;width:1px;height:1px;overflow:hidden;opacity:0;pointer-events:none}
+#tabFocus{position:absolute;z-index:7;border:2px solid #0a84ff;border-radius:999px;pointer-events:none;display:none}
+button.hit{background:none;border:0;padding:0;margin:0;color:inherit;font:inherit;cursor:pointer;-webkit-tap-highlight-color:transparent}
+.hit:focus-visible{outline:2px solid #0a84ff;outline-offset:2px}
+.panel{width:330px;flex:none;font-size:13px;line-height:1.45;color:#c9cad0;max-height:100vh;overflow-y:auto;box-sizing:border-box;padding:18px 8px 18px 0}
+.panel h1{font-size:17px;margin:0 0 4px;color:#fff;letter-spacing:-.2px}
+.panel p{margin:0 0 14px;color:#8d8f98}
+.row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 10px;margin:0 0 11px}
+.row label{color:#d9dadf;min-width:0}.row output{font-variant-numeric:tabular-nums;color:#8d8f98}
+.row input[type=range]{grid-column:1/3;width:100%;accent-color:#fa2d48}
+.chk{display:flex;gap:8px;align-items:center;margin:0 0 9px;cursor:pointer}.chk input{accent-color:#fa2d48}
+.btns{display:flex;gap:8px;margin:14px 0}
+.btns button{flex:1;padding:8px 10px;border-radius:10px;background:#23242a;border:1px solid #33343c;color:#e8e8ea;font-size:12.5px}
+.btns button:hover{background:#2b2c33}
+.map{margin-top:14px;padding-top:12px;border-top:1px solid #26272e;color:#7c7e88;font-size:12px}
+.map b{color:#a9abb4;font-weight:600}
+#hud{position:absolute;left:8px;top:96px;z-index:60;margin:0;padding:4px 7px;border-radius:8px;background:rgba(0,0,0,.72);color:#7CFF9B;font:10px/1.35 ui-monospace,Menlo,monospace;pointer-events:none;display:none;white-space:pre}
+#src{display:inline-block;padding:2px 8px;border-radius:99px;background:#23242a;border:1px solid #33343c;color:#e8e8ea;font-size:11.5px}
+#gear{display:none}
+.phone{--fbt:18,18,18}.phone.light{--fbt:250,250,250}
+.fbg{background:rgba(var(--fbt),.55);backdrop-filter:blur(14px) saturate(1.5);-webkit-backdrop-filter:blur(14px) saturate(1.5);border-radius:999px;box-shadow:inset 0 0 0 .5px rgba(255,255,255,.18),0 6px 20px rgba(0,0,0,.16)}
+#tabsFb{overflow:hidden}
+#inlineIcon{z-index:5}
+#menuScrim{position:absolute;inset:0;z-index:9;display:none}
+#menu .mi.sep{border-top:.5px solid rgba(127,127,127,.35)}
+#menu{z-index:10;display:none;overflow:hidden}
+#menu .mc{width:250px;padding:8px 0}
+#menu .mi{display:flex;align-items:center;gap:12px;height:44px;padding:0 18px;font-size:17px;color:var(--fg);pointer-events:auto;cursor:pointer;width:100%;text-align:left}
+#menu .mi:active{background:rgba(127,127,127,.22)}
+#menu .mi.hov{background:rgba(127,127,127,.22)}
+#tabsFb .ind{position:absolute;border-radius:999px;background:rgba(255,255,255,.14)}
+.phone.light #tabsFb .ind{background:rgba(255,255,255,.5)}
+#tabsFb .fbtab{position:absolute;display:flex;flex-direction:column;align-items:center;gap:1px;padding-top:6.5px;font-size:10px;font-weight:500;letter-spacing:.5px;color:var(--fg)}
+#tabsFb .fbtab span{line-height:12px}
+@media (max-width:520px){
+  body{display:block;padding:0;min-height:0;background:#000}
+  .phone{width:100vw;height:100vh;height:100dvh;border-radius:0;box-shadow:none}
+  .home{display:none}
+  .panel{display:none;position:fixed;z-index:50;inset:0;background:rgba(10,10,12,.94);padding:60px 22px 22px;overflow:auto;width:auto}
+  .panel.open{display:block}
+  #gear{display:grid;position:fixed;z-index:60;right:10px;top:10px;width:34px;height:34px;border-radius:50%;background:rgba(60,60,67,.7);color:#fff;place-items:center;font-size:16px}
+}
+#menu.shut, #menu.shut *{pointer-events:none !important}
+</style>
+</head>
+<body>
+
+<div class="phone dark" id="phone">
+  <pre id="hud"></pre>
+  <canvas id="gl" layoutsubtree>
+    <div id="page" drawable><div id="pageInner"></div></div>
+  </canvas>
+  <div id="hit"></div>
+  <div class="status"><span>9:41</span><span class="ic">
+    <svg width="18" height="12" viewBox="0 0 18 12" fill="currentColor"><rect x="0" y="8" width="3" height="4" rx="1"/><rect x="5" y="5.5" width="3" height="6.5" rx="1"/><rect x="10" y="3" width="3" height="9" rx="1"/><rect x="15" y="0" width="3" height="12" rx="1"/></svg>
+    <svg width="26" height="12" viewBox="0 0 26 12" fill="none"><rect x=".5" y=".5" width="22" height="11" rx="3.5" stroke="currentColor" opacity=".4"/><rect x="2" y="2" width="19" height="8" rx="2.2" fill="currentColor"/></svg></span></div>
+
+  <div id="topTitle" class="abs"><span class="tt">Library</span></div>
+  <div id="topBack" class="abs center"></div>
+  <div id="topActions" class="abs"></div>
+
+  <div id="acc" class="abs">
+    <div class="art"></div>
+    <div class="meta"><div class="t">Midnight Static</div><div class="a">Nova Reyes</div></div>
+    <button id="accPlay" aria-label="Play/Pause"></button>
+    <button id="accNext" aria-label="Next"></button>
+  </div>
+  <div id="inlineIcon" class="abs center"></div>
+  <div id="searchIcon" class="abs center"></div>
+
+  <div id="tabHit" class="hit"></div>
+  <button id="searchHit" class="hit" aria-label="Search"></button>
+  <div id="a11y" role="region" aria-label="Settings controls"></div>
+  <div id="a11yTabs" role="tablist" aria-label="Main sections"></div>
+  <div id="tabFocus"></div>
+  <button id="hitBack" class="hit" aria-label="Back"></button><button id="hitShare" class="hit" aria-label="Share"></button><button id="hitMore" class="hit" aria-label="More" aria-haspopup="menu" aria-expanded="false"></button>
+  <div id="menuScrim"></div>
+  <div id="menu" class="abs" role="menu"><div class="mc">
+    <button class="mi" role="menuitem"><span data-i="share"></span>Share</button>
+    <button class="mi" role="menuitem"><span data-i="library"></span>Add to Library</button>
+    <button class="mi" role="menuitem"><span data-i="explore"></span>Go to Album</button>
+    <button class="mi sep" id="miSettings" role="menuitem"><span data-i="person"></span>Settings</button>
+  </div></div>
+  <div class="home"></div>
+</div>
+
+<button id="gear" aria-label="Pengaturan">⚙</button>
+<aside class="panel" id="panel">
+  <h1>Liquid Glass — iOS navigation kit v2</h1>
+  <p>Scroll / seret konten ke bawah: bar menciut jadi satu baris (ambang 50dp, seperti <code>FloatingTabBarScrollConnection</code>). Scroll balik atau tap tab inline untuk membuka. Tap atau geser pill tab untuk melihat lensa.</p>
+  <p>Sumber backdrop: <span id="src">…</span></p>
+  <p>Renderer: <select id="selR"><option value="auto">Auto (WebGL2 → Canvas)</option><option value="webgpu">WebGPU</option><option value="webgl2">WebGL2</option><option value="canvas">Canvas 2D</option></select> <small>(memuat ulang halaman)</small></p>
+  <div class="btns"><button id="bTheme">Tema: gelap</button><button id="bReset">Reset ke nilai BitChord</button></div>
+  <div id="ctrls"></div>
+  <p style="margin-top:12px">Kontrol yang sama juga ada di app: titik tiga → Settings → Appearance. Keduanya saling tersinkron.</p>
+  <div class="map">
+    <b>Diport dari BitChord:</b> struktur GlassNavBar (accessory + pill tab + lingkaran Search, 62dp/48dp, gutter 19/28, spasi 8/14),
+    morph expanded↔inline, GlassPillMotion (spring travel/lift/material, squash dari akselerasi, handover, drag), lensa pill yang
+    membiaskan page + glass bar + baris tab, rim/shadow pill, top controls 44dp + garis tepi 0,5dp, scrim bawah, blur tepi atas.<br><br>
+    <b>Renderer &amp; fallback:</b> pilih di panel ini atau Settings → Renderer; pilihan disimpan dan halaman dimuat ulang.
+    <i>Auto</i> (bawaan) = WebGL2, lalu Canvas 2D bila gagal. Rantai penuh: <b>WebGPU → WebGL2 → Canvas 2D</b>; tiap tingkat yang gagal turun satu tingkat, dan baris “Sumber backdrop” menunjukkan renderer yang sedang aktif.<br>
+    • <b>WebGPU</b> (manual): port 1:1 dari pipeline WebGL2 ke WGSL (blur progresif, compose, blur Gaussian, lensa glass, shadow, touch glow, lensa pill). Daftar apa yang digambar dipakai bersama dengan WebGL2. Auto tidak memilihnya. Bila <code>navigator.gpu</code>/adapter/shader/device gagal atau device hilang, halaman dimuat ulang dengan flag sesi <code>lgSkipGPU</code> dan lanjut ke WebGL2 (tanpa loop; memilih WebGPU lagi menghapus flag). Tanpa HTML-in-Canvas.<br>
+    • <b>WebGL2</b>: pipeline glass penuh. Gagal bila tidak tersedia, shader/GL error, konteks hilang, atau layar kosong padahal konten ada (selfCheck) → Canvas 2D.<br>
+    • <b>Canvas 2D</b>: replika halaman + bar HTML dengan blur CSS, tanpa lensa/refraksi; juga bisa dipilih manual.<br>
+    • Terpisah dari renderer: sumber backdrop <i>HTML-in-Canvas</i> (DOM live, hanya WebGL2; WebGPU memakai replika canvas) yang jatuh ke replika canvas bila tidak merespons atau gagal.<br><br>
+    <b>Sentuh &amp; menu (tebakan):</b> dokumentasi hanya menyebut scale saat ditekan, bounce, shimmer, cahaya dari titik sentuh yang merambat ke glass di dekatnya, dan menu yang morph keluar dari tombol. Angkanya tidak dipublikasikan, jadi semua slider berlabel “tebakan” sampai diukur dari rekaman iPhone.<br><br><b>Masih pendekatan:</b> blur progresif tepi atas (Haze) saya tiru dengan campuran blur sigma 24 + kurva easing; tepi kiri-kanan blur di Android di-clamp ke rect elemen, di sini tidak; ikon memakai gaya SF Symbols, bukan Material Rounded.<br><br>
+    Shader: Kyant0/backdrop (Apache-2.0). Angka, layout &amp; teks: BitChord (GPL-3.0), jadi file ini turunan GPL-3.0 (perlu verifikasi hukum).
+  </div>
+</aside>
+
+<script>
+(() => {
+'use strict';
+const $ = s => document.querySelector(s);
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const sgn = v => (Math.abs(v) < 1e-6 ? 0 : Math.sign(v));
+const DPR = Math.min(window.devicePixelRatio || 1, 2);
+const phone = $('#phone'), glc = $('#gl'), hit = $('#hit');
+const FONT = '-apple-system,BlinkMacSystemFont,"SF Pro Text","Inter","Segoe UI",Roboto,Helvetica,Arial,sans-serif';
+
+/* ============ constants (BitChord) ============ */
+const DEFAULTS = { blur: 8, lensH: 0.5, lensA: 0.5, tint: 0.4, vib: 1, chroma: true, depth: true, pillDepth: true, frost: false, glass: true, accent: false, lensZoom: 1.12, res: 0.33, pressScale: 1.08, pressDamp: .55, relDamp: .28, touchGlow: .5, glowOn: true, glowNoise: true, glowNoiseAmt: .2, menuDamp: .73, iconBlur: true, iconBlurPx: 6, speed: 1, hud: false };
+const SAVE_KEY = 'liquid-glass-ios-kit-v2';
+let SAVE = {}; try { SAVE = JSON.parse(localStorage.getItem(SAVE_KEY)) || {}; } catch (e) {}   // file:// or private mode: localStorage can throw
+const P = { ...DEFAULTS, ...SAVE.P }; if (!SAVE.ver && SAVE.P && SAVE.P.glowNoiseAmt === .35) P.glowNoiseAmt = DEFAULTS.glowNoiseAmt;   // migrasi: default lama .35 yang tersimpan ikut naik ke default baru if (/[?&]hud\b/.test(location.search)) P.hud = true;
+const LENS_MAX = 48, SCALE = 0.33, FROST_BLUR = 16, FROST_SCALE = 0.25;
+let W = 390, H = 844;
+const STATUS = 54, TOP_H = 52, CTRL = 44, BAR_G = 19, ACTION_GAP = 10, ACTION_EDGE = 1.5;
+const NAV_G = 19, NAV_LIFT = 6, FLOOR = 15, INL_G = 28, INL_SP = 14, INL_LIFT = 7, PILL_INSET = 4, SP = 8;
+const TAB_ROW = 62, ACC_H = 48, INL_H = 48, TAB_VPAD = 6.5, ICON = 28, ICON_GAP = 1, PILL_GROW = 9;
+const SCROLL_THRESHOLD = 50;
+const TABS = ['Home', 'Explore', 'Library'], SEARCH = 3, NT = 3;
+const TITLES = ['Home', 'Explore', 'Library', 'Search'];
+const S = { dark: true, tab: 2, scrollY: 0, inline: false, t: 0, tv: 0, playing: true, accScale: 1, accScaleV: 0, accPress: false, menuOpen: false, nav: [] };
+const SPR = { back: { x: 1, v: 0, t: 1, d: null }, act: { x: 1, v: 0, t: 1, d: null }, srch: { x: 1, v: 0, t: 1, d: null }, menu: { x: 0, v: 0 }, touch: { x: 0, y: 0, s: 0, t: 0 } };
+const DEBUG = /[?&]debug\b/.test(location.search);
+const PF = { dom: 0, build: 0, render: 0, gpu: 0, gn: 0, n: 0 };
+let TQ = null, tqCur = null; const tqPend = [];
+function gpuBegin(){ if (!gl || !P.hud || tqCur) return; if (TQ === null){ try { TQ = gl.getExtension('EXT_disjoint_timer_query_webgl2') || false; } catch (e) { TQ = false; } } if (!TQ) return; tqCur = gl.createQuery(); gl.beginQuery(TQ.TIME_ELAPSED_EXT, tqCur); }
+function gpuEnd(){ if (!gl) return; if (tqCur){ gl.endQuery(TQ.TIME_ELAPSED_EXT); tqPend.push(tqCur); tqCur = null; }
+  while (tqPend.length){ const qq = tqPend[0]; if (!gl.getQueryParameter(qq, gl.QUERY_RESULT_AVAILABLE)) break; if (!gl.getParameter(TQ.GPU_DISJOINT_EXT)){ PF.gpu += gl.getQueryParameter(qq, gl.QUERY_RESULT) / 1e6; PF.gn++; } gl.deleteQuery(qq); tqPend.shift(); } }   // test hooks only with ?debug
+// guesses, not from Apple:
+const MENU_CLOSE_ZETA = .85;   // closing: no undershoot below the capsule (damping .62 squashed it to ~75% height) and a shorter tail
+const MENU_W = 250, MENU_K = 300, PRESS_K = 500, MENU_HOLD_MS = 350;
+// Haptics: Vibration API only (Android Chrome etc.). iOS Safari has none, desktop ignores it. Patterns are guesses.
+let HAPTIC = true;
+const haptic = ms => { try { if (HAPTIC && navigator.vibrate) navigator.vibrate(ms); } catch (_) {} };
+
+/* ============ icons ============ */
+const IC = {
+  home:    [{ d: 'M4 11.4 12 4.2l8 7.2V20h-5.2v-5.6H9.2V20H4z' }],
+  explore: [{ d: 'M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18z' }, { d: 'M15.8 8.2l-2.1 5.5-5.5 2.1 2.1-5.5z', f: 1 }],
+  library: [{ d: 'M9 18V6l10-2v12' }, { d: 'M6.5 15.5a2.5 2.5 0 1 0 0 5a2.5 2.5 0 1 0 0-5z' }, { d: 'M16.5 13.5a2.5 2.5 0 1 0 0 5a2.5 2.5 0 1 0 0-5z' }],
+  search:  [{ d: 'M11 4.5a6.5 6.5 0 1 0 0 13a6.5 6.5 0 1 0 0-13z' }, { d: 'M16 16l4.5 4.5' }],
+  back:    [{ d: 'M15 5l-7 7 7 7' }],
+  share:   [{ d: 'M12 3.5v11M8 7.2l4-3.7 4 3.7M5.5 11.5V19a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1v-7.5' }],
+  more:    [{ d: 'M3.9 12a1.6 1.6 0 1 0 3.2 0a1.6 1.6 0 1 0-3.2 0zM10.4 12a1.6 1.6 0 1 0 3.2 0a1.6 1.6 0 1 0-3.2 0zM16.9 12a1.6 1.6 0 1 0 3.2 0a1.6 1.6 0 1 0-3.2 0z', f: 1 }],
+  play:    [{ d: 'M8 5v14l11-7z', f: 1 }],
+  pause:   [{ d: 'M7 5h3.4v14H7zM13.6 5H17v14h-3.4z', f: 1 }],
+  next:    [{ d: 'M5 5.5v13l8-6.5zM13 5.5v13l8-6.5z', f: 1 }],
+  chev:    [{ d: 'M9 5l7 7-7 7' }],
+  person:  [{ d: 'M12 4.5a3.6 3.6 0 1 0 0 7.2a3.6 3.6 0 1 0 0-7.2z' }, { d: 'M5 20c.6-3.6 3.4-5.6 7-5.6s6.4 2 7 5.6' }],
+  groups:  [{ d: 'M9 5.5a3 3 0 1 0 0 6a3 3 0 1 0 0-6z' }, { d: 'M3.5 19c.5-3 2.6-4.8 5.5-4.8s5 1.8 5.5 4.8' }, { d: 'M16.5 6.5a2.5 2.5 0 1 1 0 5' }, { d: 'M17 14.4c2 .4 3.2 1.9 3.5 4.1' }],
+  extension: [{ d: 'M10 4h4v3a1.5 1.5 0 1 0 3 0V4h3v6h-3a1.5 1.5 0 1 0 0 3h3v7H4v-7h3a1.5 1.5 0 1 0 0-3H4V4z' }],
+  wifi:    [{ d: 'M3.5 9.5a12 12 0 0 1 17 0' }, { d: 'M6.5 12.8a7.8 7.8 0 0 1 11 0' }, { d: 'M9.5 16a3.5 3.5 0 0 1 5 0' }, { d: 'M12 19.2h.01' }],
+  cell:    [{ d: 'M5 19v-3M10 19v-6M15 19V9M20 19V5' }],
+  dolby:   [{ d: 'M4 6h3.5a6 6 0 0 1 0 12H4z' }, { d: 'M20 6h-3.5a6 6 0 0 0 0 12H20z' }],
+  download:[{ d: 'M12 4v11M7.5 11 12 15.5 16.5 11M5 20h14' }],
+  playcircle: [{ d: 'M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18z' }, { d: 'M10 8.5v7l5.5-3.5z' }],
+  video:   [{ d: 'M4 7h11v10H4z' }, { d: 'M15 11l5-3v8l-5-3' }],
+  appearance: [{ d: 'M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18z' }, { d: 'M12 3a9 9 0 0 0 0 18z', f: 1 }],
+  perf:    [{ d: 'M4 16a8 8 0 1 1 16 0' }, { d: 'M12 16l4-5' }],
+  storage: [{ d: 'M4 7a8 3 0 1 0 16 0a8 3 0 1 0-16 0' }, { d: 'M4 7v10c0 1.7 3.6 3 8 3s8-1.3 8-3V7' }, { d: 'M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3' }],
+  yourdata:[{ d: 'M5 20v-7M10 20V5M15 20v-9M20 20V9' }],
+  misc:    [{ d: 'M6 6h4v4H6zM14 6h4v4h-4zM6 14h4v4H6zM14 14h4v4h-4z' }],
+  language:[{ d: 'M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18z' }, { d: 'M3 12h18' }, { d: 'M12 3c3 3 3 15 0 18' }, { d: 'M12 3c-3 3-3 15 0 18' }],
+  brightness: [{ d: 'M12 8a4 4 0 1 0 0 8a4 4 0 1 0 0-8z' }, { d: 'M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4' }],
+  font:    [{ d: 'M5 19 10.5 5 16 19M7.2 14h6.6' }],
+  motionoff: [{ d: 'M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18z' }, { d: 'M5.6 5.6l12.8 12.8' }],
+  blur:    [{ d: 'M12 3.5c3.5 4 6 7 6 10a6 6 0 0 1-12 0c0-3 2.5-6 6-10z' }, { d: 'M4.5 4.5l15 15' }],
+  gradient:[{ d: 'M4.5 4.5h15v15h-15z' }, { d: 'M4.5 19.5l15-15' }],
+  sparkle: [{ d: 'M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z' }, { d: 'M18.5 16l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z' }],
+};
+const svg = (n, size, sw) => `<svg class="ico" width="${size}" height="${size}" viewBox="0 0 24 24"${sw ? ` style="stroke-width:${sw}"` : ''}>${IC[n].map(p => `<path${p.f ? ' class="f"' : ''} d="${p.d}"/>`).join('')}</svg>`;
+const P2D = {}; for (const k in IC) P2D[k] = IC[k].map(p => ({ p: new Path2D(p.d), f: !!p.f }));
+
+/* ============ page content: one list of primitives, drawn by canvas2D or built as live DOM ============ */
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+const artCache = new Map();
+function art(seed, size){
+  const key = seed + '_' + size + '_' + DPR; if (artCache.has(key)) return artCache.get(key);
+  const r = mulberry32(seed * 9301 + 49297), c = document.createElement('canvas'); c.width = c.height = Math.round(size * DPR);
+  const g = c.getContext('2d'); g.scale(DPR, DPR);
+  const h1 = r() * 360, h2 = (h1 + 40 + r() * 150) % 360, gr = g.createLinearGradient(0, 0, size * (.4 + r() * .6), size);
+  gr.addColorStop(0, `hsl(${h1} 88% ${52 + r() * 10}%)`); gr.addColorStop(1, `hsl(${h2} 86% ${38 + r() * 16}%)`);
+  g.fillStyle = gr; g.fillRect(0, 0, size, size);
+  for (let i = 0, n = 2 + Math.floor(r() * 3); i < n; i++){
+    const t = r(), x = r() * size, y = r() * size, rad = size * (.16 + r() * .34);
+    if (t < .4){ const rg = g.createRadialGradient(x, y, 0, x, y, rad); rg.addColorStop(0, `hsl(${(h1 + 60) % 360} 95% 70% / .75)`); rg.addColorStop(1, `hsl(${h2} 90% 60% / 0)`); g.fillStyle = rg; g.beginPath(); g.arc(x, y, rad, 0, 7); g.fill(); }
+    else if (t < .72){ g.lineWidth = size * (.03 + r() * .05); g.strokeStyle = `hsl(${(h2 + 180) % 360} 90% 82% / .55)`; g.beginPath(); g.arc(x, y, rad, 0, 7); g.stroke(); }
+    else { g.save(); g.translate(size / 2, size / 2); g.rotate(r() * 3.14); g.fillStyle = 'rgba(255,255,255,.16)'; const bw = size * (.08 + r() * .12); for (let k = -4; k < 5; k += 2) g.fillRect(-size, k * bw, size * 2, bw); g.restore(); }
+  }
+  artCache.set(key, c); return c;
+}
+const ALBUMS = ['Midnight Static','Paper Moons','Golden Hour Drive','Low Tide','Neon Garden','Velvet Rain','Afterglow','Slow Motion Summer','Glass Houses','Static Bloom','Salt & Honey','Parallel Lines'];
+const ARTISTS = ['Nova Reyes','The Quiet Hours','Kira Vale','Lumen','Ode to Sand','Mara Lin','Hollow Pines','Juno & Co.','Atlas Bloom','Pale Fire'];
+const TOP_BAR_H = STATUS + TOP_H;                       // topBarHeight()
+let prims = [], contentH = 1600;
+function buildPrims(){
+  if (S.nav.length){ buildSettingsPrims(); syncA11y(); return; }
+  if (a11yKey) syncA11y();
+  const dark = S.dark, fg = dark ? '#fff' : '#000', sub = dark ? '#8e8e93' : '#6c6c70', line = dark ? 'rgba(255,255,255,.10)' : 'rgba(0,0,0,.08)';
+  const base = S.tab * 37, out = []; let y = TOP_BAR_H + 12;
+  const text = (x, yy, size, weight, color, str) => out.push({ k: 'text', x, y: yy, size, weight, color, str });
+  text(20, y + 34, 34, 700, fg, TITLES[S.tab]); y += 84;
+  const header = s => { text(20, y + 22, 22, 700, fg, s); y += 40; };
+  const card = (x, yy, size, seed, i) => { out.push({ k: 'art', x, y: yy, s: size, seed, r: 10, h: size }); text(x, yy + size + 20, 14, 500, fg, ALBUMS[(i + base) % ALBUMS.length]); text(x, yy + size + 38, 13, 400, sub, ARTISTS[(i * 3 + base) % ARTISTS.length]); };
+  header('Recently Added');
+  for (let i = 0; i < 4; i++) card(20 + i * 168, y, 152, base + i, i);
+  y += 152 + 58; header('Made For You');
+  const gw = (W - 40 - 14) / 2;
+  for (let i = 0; i < 4; i++) card(20 + (i % 2) * (gw + 14), y + Math.floor(i / 2) * (gw + 56), gw, base + 20 + i, i + 4);
+  y += 2 * (gw + 56) + 8; header('Songs');
+  for (let i = 0; i < 12; i++){ const yy = y + i * 64;
+    out.push({ k: 'art', x: 20, y: yy, s: 48, seed: base + 50 + i, r: 7 });
+    text(80, yy + 21, 16, 500, fg, ALBUMS[(i * 5 + base) % ALBUMS.length]); text(80, yy + 40, 14, 400, sub, ARTISTS[(i * 7 + base) % ARTISTS.length]);
+    out.push({ k: 'line', x1: 80, x2: W - 20, y: yy + 56.5, color: line }); }
+  y += 12 * 64; contentH = y + 240; prims = out;
+}
+const C2D = DEBUG && /[?&]swcanvas\b/.test(location.search) ? { willReadFrequently: true } : undefined;   // tests: software raster, so both renderers get identical page pixels
+const cv = document.createElement('canvas'), cx = cv.getContext('2d', C2D);
+// switch / slider thumb: one geometry for canvas, DOM and the WebGL glass thumb
+const thumbGeo = (cxm, cym, pr) => { const w = 40 * (1 + .3 * pr), h = 24 * (1 + .25 * pr); return { x: cxm - w / 2, y: cym - h / 2, w, h, r: h / 2 }; };
+const slTx = (frac, x0, w) => x0 + 20 + frac * (w - 40);   // pusat pil putih (setengah lebar 40/2 = 20): tepinya pas dengan ujung track di frac 0 / 1
+const slFrac = (px, x0, w) => clamp((px - slTx(0, x0, w)) / (w - 40), 0, 1);   // slFrac = kebalikan slTx (jari -> nilai)
+const slFill = (frac, c, w) => { const B = .06, a = clamp(1 - frac / B, 0, 1), b = clamp((frac - (1 - B)) / B, 0, 1); return c + (0 - c) * a * a * (3 - 2 * a) + (w - c) * b * b * (3 - 2 * b); };   // putih track: ikut pusat thumb, baru bergeser mentok ke tepi di 6% terakhir sebelum ujung
+const sliderGeo = (frac, cy, pr, x0, w) => thumbGeo(slTx(frac, x0, w), cy, clamp(pr, 0, 1.2));   // pusat = posisi pil putih idle (mentok di ujung); lensa yang membesar boleh overshoot, persis seperti saklar
+//   // satu-satunya sumber geometri thumb slider: pil putih, DOM dan lensa glass memakai rumus yang sama, jadi pusatnya selalu sama
+const swCx = t => 22 + 20 * t;                                  // travel thumb switch: inset 2px di kedua ujung track 64
+/* The thumb shadow is a canvas shadowBlur. On phones that is one extra blur pass per thumb per frame (every switch and slider, every scroll frame),
+   so it is rendered once into a small sprite and reused. Canvas shadows are in device pixels (not scaled by the transform), so the sprite is built the same way.
+   Only the idle size (pr = 0) uses the sprite; a pressed, enlarged thumb keeps the direct shadowBlur path. The white body is always drawn as an exact vector shape. */
+const thumbShadows = new Map();
+function thumbShadowSprite(w, h){
+  const k = w + 'x' + h + '@' + DPR; let sp = thumbShadows.get(k); if (sp) return sp;
+  const pad = 10, cvs = document.createElement('canvas'); cvs.width = Math.ceil((w + 2 * pad) * DPR); cvs.height = Math.ceil((h + 2 * pad) * DPR);
+  const g = cvs.getContext('2d'), OFF = 4000; g.shadowColor = 'rgba(0,0,0,.28)'; g.shadowBlur = 3; g.shadowOffsetX = OFF; g.shadowOffsetY = 1; g.fillStyle = '#000';
+  rrPath(g, pad * DPR - OFF, pad * DPR, w * DPR, h * DPR, h * DPR / 2); g.fill();      // the body itself lands off-canvas; only its shadow is visible
+  sp = { cvs, pad, cw: cvs.width / DPR, ch: cvs.height / DPR }; thumbShadows.set(k, sp); return sp;
+}
+function drawThumb(c, g, a = 1){
+  c.save(); c.globalAlpha = a;
+  if (Math.abs(g.w - 40) < .01 && Math.abs(g.h - 24) < .01){ const sp = thumbShadowSprite(40, 24); c.drawImage(sp.cvs, g.x - sp.pad, g.y - sp.pad, sp.cw, sp.ch); }
+  else { c.shadowColor = 'rgba(0,0,0,.28)'; c.shadowBlur = 3; c.shadowOffsetY = 1; }
+  c.fillStyle = '#fff'; rrPath(c, g.x, g.y, g.w, g.h, g.r); c.fill(); c.restore();
+}
+function domThumb(parent, g, ox, oy, a = 1){ const t = document.createElement('div'); Object.assign(t.style, { opacity: a, left: (g.x - ox) + 'px', top: (g.y - oy) + 'px', width: g.w + 'px', height: g.h + 'px', borderRadius: g.r + 'px', background: '#fff', boxShadow: '0 1px 3px rgba(0,0,0,.28)' }); parent.appendChild(t); }
+function rrPath(c, x, y, w, h, r){ c.beginPath(); c.moveTo(x + r, y); c.arcTo(x + w, y, x + w, y + h, r); c.arcTo(x + w, y + h, x, y + h, r); c.arcTo(x, y + h, x, y, r); c.arcTo(x, y, x + w, y, r); c.closePath(); }
+function drawContent(){            // canvas replica of the page (used when HTML-in-Canvas is unavailable)
+  const c = cx; c.setTransform(DPR, 0, 0, DPR, 0, 0); c.fillStyle = S.dark ? '#000' : '#fff'; c.fillRect(0, 0, W, H);
+  c.save(); c.translate(0, -S.scrollY); c.textBaseline = 'alphabetic';
+  for (const p of prims){
+    if (p.y + (p.h || 0) + 80 < S.scrollY || (p.y || 0) - 200 > S.scrollY + H) continue;
+    if (p.k === 'text'){ c.fillStyle = p.color; c.font = `${p.weight} ${p.size}px ${FONT}`; c.textAlign = p.al === 'r' ? 'right' : p.al === 'c' ? 'center' : 'left'; if ('letterSpacing' in c) c.letterSpacing = (p.ls || 0) + 'px'; c.fillText(p.str, p.x, p.y); c.textAlign = 'left'; if ('letterSpacing' in c) c.letterSpacing = '0px'; }
+    else if (p.k === 'rrect'){ c.fillStyle = p.color; rrPath(c, p.x, p.y, p.w, p.h, p.r); c.fill(); if (p.bw){ c.strokeStyle = p.bc; c.lineWidth = p.bw; c.stroke(); } }
+    else if (p.k === 'icon'){ c.save(); c.translate(p.x, p.y); c.scale(p.s / 24, p.s / 24); c.strokeStyle = p.color; c.fillStyle = p.color; c.lineWidth = 1.9; c.lineCap = c.lineJoin = 'round'; for (const q of P2D[p.name]){ if (q.f) c.fill(q.p); else c.stroke(q.p); } c.restore(); }
+    else if (p.k === 'sw'){ c.fillStyle = p.c; rrPath(c, p.x, p.y, 64, 28, 14); c.fill(); if (p.thumb) drawThumb(c, thumbGeo(p.x + swCx(p.t), p.y + 14, p.pr), p.ta); }
+    else if (p.k === 'slider'){ c.fillStyle = p.track; rrPath(c, p.x, p.cy - 3, p.w, 6, 3); c.fill(); if (p.fw > .5){ c.fillStyle = p.color; rrPath(c, p.x, p.cy - 3, p.fw, 6, Math.min(3, p.fw / 2)); c.fill(); } if (p.thumb) drawThumb(c, p.geo, p.ta); }
+    else if (p.k === 'art'){ c.save(); rrPath(c, p.x, p.y, p.s, p.s, p.r); c.clip(); c.drawImage(art(p.seed, p.s), p.x, p.y, p.s, p.s); c.restore(); }
+    else if (p.k === 'line'){ c.strokeStyle = p.color; c.lineWidth = p.lw || 1; c.beginPath(); c.moveTo(p.x1, p.y); c.lineTo(p.x2, p.y); c.stroke(); }
+  }
+  c.restore();
+}
+const pageEl = $('#page'), pageInner = $('#pageInner');
+function domEl(p){                   // satu primitif -> satu elemen DOM (HTML-in-Canvas)
+    const e = document.createElement(p.k === 'art' ? 'img' : 'div');
+    if (p.k === 'text'){ e.textContent = p.str; Object.assign(e.style, { top: (p.y - p.size * .86) + 'px', font: `${p.weight} ${p.size}px/1 ${FONT}`, color: p.color, whiteSpace: 'nowrap', letterSpacing: (p.ls || 0) + 'px' }); if (p.al === 'r') e.style.right = (W - p.x) + 'px'; else { e.style.left = p.x + 'px'; if (p.al === 'c') e.style.transform = 'translateX(-50%)'; } }
+    else if (p.k === 'rrect'){ Object.assign(e.style, { left: p.x + 'px', top: p.y + 'px', width: p.w + 'px', height: p.h + 'px', borderRadius: p.r + 'px', background: p.color, boxSizing: 'border-box', border: p.bw ? p.bw + 'px solid ' + p.bc : '' }); }
+    else if (p.k === 'icon'){ e.innerHTML = svg(p.name, p.s); Object.assign(e.style, { left: p.x + 'px', top: p.y + 'px', width: p.s + 'px', height: p.s + 'px', color: p.color }); }
+    else if (p.k === 'sw'){ Object.assign(e.style, { left: p.x + 'px', top: p.y + 'px', width: '64px', height: '28px', borderRadius: '14px', background: p.c }); if (p.thumb) domThumb(e, thumbGeo(p.x + swCx(p.t), p.y + 14, p.pr), p.x, p.y, p.ta); }
+    else if (p.k === 'slider'){ Object.assign(e.style, { left: p.x + 'px', top: (p.cy - 3) + 'px', width: p.w + 'px', height: '6px', borderRadius: '3px', background: p.track }); const f = document.createElement('div'); Object.assign(f.style, { left: '0', top: '0', width: p.fw + 'px', height: '6px', borderRadius: '3px', background: p.color }); e.appendChild(f); if (p.thumb) domThumb(e, p.geo, p.x, p.cy - 3, p.ta); }
+    else if (p.k === 'art'){ const ac = art(p.seed, p.s); e.src = ac.url || (ac.url = ac.toDataURL()); Object.assign(e.style, { left: p.x + 'px', top: p.y + 'px', width: p.s + 'px', height: p.s + 'px', borderRadius: p.r + 'px' }); }
+    else { const lw = p.lw || 1; Object.assign(e.style, { left: p.x1 + 'px', top: (p.y - lw / 2) + 'px', width: (p.x2 - p.x1) + 'px', height: lw + 'px', background: p.color }); }
+    return e;
+}
+function buildDOM(){                // same primitives as live DOM, for HTML-in-Canvas
+  pageEl.style.background = S.dark ? '#000' : '#fff'; pageInner.textContent = ''; pageInner.style.height = contentH + 'px';
+  const f = document.createDocumentFragment(); for (const p of prims) f.appendChild(domEl(p)); pageInner.appendChild(f);
+}
+function patchDOM(){                // saat saklar/slider bergerak: hanya elemen saklar & slider yang diganti, bukan seluruh halaman
+  const ch = pageInner.children; if (ch.length !== prims.length) return buildDOM();
+  prims.forEach((p, i) => { if (p.k === 'sw' || p.k === 'slider') pageInner.replaceChild(domEl(p), ch[i]); });
+}
+
+/* ============ Settings screen (layout transcribed from BitChord SettingsSheet.kt) ============ */
+const RENDERERS = ['auto', 'webgpu', 'webgl2', 'canvas'];
+const ST = { renderer: 'auto', haptic: true, direct: true, dolby: true, reduceAnim: false, reduceBlur: false, blend: false, progBlur: true, themeMode: 2, ...SAVE.ST };
+HAPTIC = ST.haptic;   // saved value wins over the hard-coded true above
+const CATS = [['DOWNLOADS', 'Downloads', 'download'], ['PLAYBACK', 'Playback', 'playcircle'], ['CONTENT', 'Content Preferences', 'video'], ['APPEARANCE', 'Appearance', 'appearance'], ['PERFORMANCE', 'Performance', 'perf'], ['LOCAL', 'Local Music', 'library'], ['STORAGE', 'Storage', 'storage'], ['DATA', 'Your data', 'yourdata'], ['MISC', 'Miscellaneous', 'misc'], ['LANG', 'Language', 'language']];
+let HITS = [], GT = [], A11Y = [], FOCUSKEY = null, a11yKey = '';
+const a11yEls = new Map(); const navScroll = [], GS = {}, SWREG = {};
+const tabsA11y = $('#a11yTabs'), tabFocus = $('#tabFocus');
+const gs = (key, init) => GS[key] || (GS[key] = { x: init ? 1 : 0, v: 0, p: 0, pv: 0, pt: 0 });
+const GLTHUMB = () => (GL_OK || !!GPU) && P.glass;           // switch/slider thumbs are real glass only when the WebGL glass pipeline is on
+function pageTitle(){ const p = S.nav[S.nav.length - 1]; if (!p) return TITLES[S.tab]; if (p === 'settings') return 'Settings'; return CATS.find(c => c[0] === p.slice(4))[1]; }
+let syncCtrls = () => {};
+let _savedStr = null;
+function persist(){ const s = JSON.stringify({ ver: 2, P, ST }); if (s === _savedStr) return; _savedStr = s; try { localStorage.setItem(SAVE_KEY, s); } catch (e) {} }
+function refreshPage(){ persist(); syncCtrls(); buildPrims(); if (HIC) buildDOM(); sceneDirty = true; needsRender = true; S.scrollY = clamp(S.scrollY, 0, Math.max(0, contentH - H)); startLoop(); }
+function openPage(id){ if (!S.nav.length) navScroll.length = 0; navScroll.push(S.scrollY); S.nav.push(id); S.menuOpen = false; buildPrims(); if (HIC) buildDOM(); sceneDirty = true; needsRender = true; setScroll(0); startLoop(); }
+function popPage(){ if (!S.nav.length) return; S.nav.pop(); const y = navScroll.pop() || 0; buildPrims(); if (HIC) buildDOM(); sceneDirty = true; needsRender = true; setScroll(y); startLoop(); }
+function setThemeMode(i){ ST.themeMode = i; setTheme(i === 0 ? matchMedia('(prefers-color-scheme: dark)').matches : i === 2); persist(); }
+// touch zones (kept apart from layout): hold + slide a switch thumb, drag a slider
+// A glass thumb is drawn on top of the finished frame, so it would skip the top progressive blur and the bottom scrim.
+// Idle thumbs are therefore flat white page content (faded with the page); the glass lens only takes over while pressed,
+// and only away from the scrim.
+const thumbRamp = cy => clamp((cy - (TOP_BAR_H - 6)) / 40, 0, 1) * clamp((H - 150 - cy) / 90, 0, 1);
+const thumbAlpha = (cyContent, pr) => GLTHUMB() ? 1 - clamp(pr, 0, 1) * thumbRamp(cyContent - S.scrollY) : 1;
+function switchZone(r, tx0, ty0){ const key = r.title; let st = null;
+  HITS.push({ y: ty0 - 8, h: 44, x: tx0 - 8, w: 80, press: on => { gs(key).pt = on ? 1 : 0; startLoop(); },
+    drag: px => { const g = gs(key); if (!st){ st = { px0: px, off: px - (tx0 + swCx(g.x)), moved: false }; return; }
+      if (!st.moved && Math.abs(px - st.px0) > 4){ st.moved = true; g.drag = true; } if (st.moved){ g.x = clamp((px - st.off - tx0 - swCx(0)) / (swCx(1) - swCx(0)), 0, 1); g.v = 0; startLoop(); } },
+    end: cancelled => { const g = gs(key), s0 = st; st = null; g.drag = false; if (!s0) return; if (!s0.moved){ if (!cancelled) r.on(); return; } if ((g.x > .5) !== !!r.sw()) r.on(); startLoop(); } });
+}
+function sliderZone(sl, g, x0, w, ry){
+  const setFrom = px => { let nv = sl.min + slFrac(px, x0, w) * (sl.max - sl.min); nv = Math.round(nv / sl.step) * sl.step; nv = +nv.toFixed(4); if (nv !== sl.get()){ sl.set(nv); refreshPage(); } };
+  let grab = null;
+  const thumbX = () => slTx(clamp((sl.get() - sl.min) / (sl.max - sl.min), 0, 1), x0, w);
+  HITS.push({ y: ry + 26, h: 46, x: x0 - 10, w: w + 20,
+    drag: px => { if (grab === null) grab = px - thumbX(); setFrom(px - grab); },
+    press: on => { if (!on) grab = null; g.pt = on ? 1 : 0; startLoop(); },
+    end: () => { grab = null; } });
+}
+const WRAPC = new Map(); try { document.fonts && document.fonts.addEventListener('loadingdone', () => WRAPC.clear()); } catch (e) {}
+function buildSettingsPrims(){
+  const dark = S.dark, th = dark ? { fg: '#fff', card: '#1C1C1E', sub: '#8E8E93', line: '#2C2C2E', on: '#30D158', off: 'rgba(142,142,147,.36)', seg: '#48484A' } : { fg: '#000', card: '#F2F2F7', sub: '#6E6E73', line: '#E5E5EA', on: '#34C759', off: 'rgba(142,142,147,.22)', seg: '#fff' };
+  const out = [], page = S.nav[S.nav.length - 1]; HITS = []; GT = []; A11Y = [];
+  const addA11y = a => { A11Y.push(a); if (a.key === FOCUSKEY) out.push({ k: 'rrect', x: a.ring[0], y: a.ring[1], w: a.ring[2], h: a.ring[3], r: 10, color: 'rgba(0,0,0,0)', bw: 2, bc: th.fg }); };
+  const swRGB = dark ? [48, 209, 88] : [52, 199, 89], offA = dark ? .36 : .22, swColor = t => `rgba(${Math.round(142 + (swRGB[0] - 142) * t)},${Math.round(142 + (swRGB[1] - 142) * t)},${Math.round(147 + (swRGB[2] - 147) * t)},${(offA + (1 - offA) * t).toFixed(3)})`;
+  const GI = 16, RI = 16, TI = 52, IS = 22;
+  const text = (x, yy, size, weight, color, str, o) => out.push({ k: 'text', x, y: yy, size, weight, color, str, ...o });
+  const wrap = (str, size, maxW) => { const mk = size + '|' + maxW + '|' + str, hit = WRAPC.get(mk); if (hit) return hit.slice(); cx.font = `400 ${size}px ${FONT}`; const lines = []; let l = ''; for (const w of str.split(' ')){ const t = l ? l + ' ' + w : w; if (cx.measureText(t).width > maxW && l){ lines.push(l); l = w; } else l = t; } if (l) lines.push(l); WRAPC.set(mk, lines.slice()); return lines; };
+  let y = TOP_BAR_H + 8;
+  text(20, y + 31, 34, 800, th.fg, pageTitle(), { ls: -.5 }); y += 41 + 14;
+  const group = (header, footer, rows, topSpacing = 26) => {
+    if (header){ text(GI + 4, y + 26 + 10, 11, 600, th.sub, header.toUpperCase(), { ls: .3 }); y += 26 + 13 + 8; } else y += topSpacing;
+    const cx0 = GI, cw = W - 2 * GI, L = []; let hh = 0;
+    for (const r of rows){
+      const right = r.sw ? 64 + 12 : (r.chev || r.value) ? 12 + 20 + (r.value ? 4 + (cx.measureText ? (cx.font = `400 16px ${FONT}`, cx.measureText(r.value).width) : 0) : 0) : 0;
+      const subLines = r.sub ? wrap(r.sub, 14, cw - (r.noIcon ? RI : TI) - RI - right) : [];
+      let h, tOff = 0;
+      if (r.subrow) h = 24 + subLines.length * 21 + 10;
+      else if (r.slider){ const tl = wrap(r.title, 16, cw - 2 * RI - 46); tOff = (tl.length - 1) * 21; h = 72 + tOff; }
+      else { h = Math.max(52, 24 + 24 + subLines.length * 21); if (r.seg) h += 36 + 14; }
+      L.push({ r, h, subLines, y: y + hh, tOff }); hh += h;
+    }
+    if (rows.length) out.push({ k: 'rrect', x: cx0, y, w: cw, h: hh, r: 14, color: th.card });
+    L.forEach(({ r, h, subLines, y: ry, tOff }, i) => {
+      if (i > 0 && r.divided !== false) out.push({ k: 'line', x1: cx0 + TI, x2: cx0 + cw, y: ry, color: th.line, lw: .5 });
+      if (r.slider){
+        const sl = r.slider, v = sl.get(), x0 = cx0 + RI, w = cw - 2 * RI, frac = clamp((v - sl.min) / (sl.max - sl.min), 0, 1), g = gs('sl:' + sl.key), tcy = ry + 54 + tOff, tx = slTx(frac, x0, w);
+        wrap(r.title, 16, cw - 2 * RI - 46).forEach((ln, j) => text(x0, ry + 29 + j * 21, 16, 400, th.fg, ln, { ls: .2 }));
+        text(x0 + w, ry + 29, 16, 400, th.sub, String(Math.round(v * 100) / 100), { al: 'r' });
+        out.push({ k: 'slider', x: x0, y: tcy - 20, h: 40, cy: tcy, w, fw: slFill(frac, tx - x0, w), geo: sliderGeo(frac, tcy, g.p, x0, w),
+          color: th.fg, track: th.line, thumb: true, ta: thumbAlpha(tcy, g.p), pr: g.p });
+        GT.push({ id: 'sl:' + sl.key, kind: 'sl', cy: tcy, x0, w, frac });
+        sliderZone(sl, g, x0, w, ry + tOff);
+        addA11y({ key: 'sl:' + sl.key, kind: 'range', label: r.title, sl, y: ry, ring: [x0 - 6, ry + 4 + tOff, w + 12, 64] });
+        return;
+      }
+      const rowH = r.seg ? h - 36 - 14 : h, mid = ry + rowH / 2, blockH = 24 + subLines.length * 21;
+      const top = r.subrow ? ry : mid - blockH / 2, tx = cx0 + (r.subrow || r.noIcon ? RI : TI);
+      if (r.icon) out.push({ k: 'icon', name: r.icon, x: cx0 + RI, y: mid - IS / 2, s: IS, color: th.fg });
+      text(tx, top + 17, 16, 400, th.fg, r.title, { ls: .2 });
+      subLines.forEach((ln, j) => text(tx, top + 24 + 15 + j * 21, 14, 400, th.sub, ln, { ls: .3 }));
+      const rx = cx0 + cw - RI, sy = r.subrow ? ry + 12 - 4 : mid - 14;
+      if (r.sw){ const key = r.title, g = gs(key, r.sw()), tyy = r.subrow ? ry : sy; SWREG[key] = r.sw; out.push({ k: 'sw', x: rx - 64, y: tyy, h: 28, c: swColor(g.x), thumb: true, ta: thumbAlpha(tyy + 14, g.p), t: g.x, pr: g.p }); GT.push({ id: key, kind: 'sw', tx: rx - 64, ty: tyy }); }
+      else if (r.chev || r.value){ out.push({ k: 'icon', name: 'chev', x: rx - 20, y: mid - 10, s: 20, color: dark ? 'rgba(142,142,147,.7)' : 'rgba(110,110,115,.7)' }); if (r.value) text(rx - 24, mid + 5.5, 16, 400, th.sub, r.value, { al: 'r' }); }
+      if (r.seg){ const sx = cx0 + RI, sw2 = cw - 2 * RI, sy2 = ry + rowH, n = r.seg.opts.length, w1 = sw2 / n;
+        out.push({ k: 'rrect', x: sx, y: sy2, w: sw2, h: 36, r: 9, color: th.line });
+        out.push({ k: 'rrect', x: sx + 2 + r.seg.sel * w1, y: sy2 + 2, w: w1 - 4, h: 32, r: 7, color: th.seg });
+        r.seg.opts.forEach((o, j) => { addA11y({ key: r.title + ':' + j, kind: 'radio', label: r.title + ': ' + o, checked: j === r.seg.sel, act: () => r.seg.on(j), y: sy2, ring: [sx + j * w1, sy2, w1, 36] }); text(sx + (j + .5) * w1, sy2 + 23, 14, 600, th.fg, o, { al: 'c' }); HITS.push({ y: sy2, h: 36, x: sx + j * w1, w: w1, fn: () => { r.seg.on(j); } }); }); }
+      if (r.sw){ switchZone(r, rx - 64, r.subrow ? ry : mid - 14); addA11y({ key: r.title, kind: 'switch', label: r.title, get: r.sw, act: r.on, y: ry, ring: [cx0 + 2, ry + 1, cw - 4, rowH - 2] }); }
+      else if (r.on) addA11y({ key: r.title, kind: 'button', label: r.title, act: r.on, y: ry, ring: [cx0 + 2, ry + 1, cw - 4, rowH - 2] });
+      const act = r.on || (r.sw && r.toggle); if (act) HITS.push({ y: ry, h: rowH, fn: act, press: r.sw ? (on => { gs(r.title).pt = on ? 1 : 0; startLoop(); }) : undefined });
+    });
+    y += hh;
+    if (footer){ const fl = wrap(footer, 14, W - 2 * (GI + 4)); y += 8; fl.forEach((ln, j) => text(GI + 4, y + 15 + j * 21, 14, 400, th.sub, ln, { ls: .3 })); y += fl.length * 21; }
+  };
+  const tog = (key, extra) => ({ sw: () => ST[key], on: () => { ST[key] = !ST[key]; if (key === 'haptic') HAPTIC = ST.haptic; haptic(10); if (extra) extra(); refreshPage(); } });
+  const ptog = key => ({ sw: () => P[key], on: () => { P[key] = !P[key]; blurDirty = glyphDirty = true; haptic(10); refreshPage(); } });
+  const psl = (key, title, min, max, step) => ({ title, slider: { key, min, max, step, get: () => P[key], set: v => { P[key] = v; blurDirty = true; } } });
+  if (page === 'settings'){
+    out.push({ k: 'rrect', x: 20, y, w: W - 40, h: 44, r: 12, color: th.card });
+    out.push({ k: 'icon', name: 'search', x: 32, y: y + 11, s: 22, color: th.sub });
+    text(62, y + 28, 16, 400, th.sub, 'Search settings', { ls: .2 }); y += 44 + 4;
+    group(null, null, [
+      { icon: 'person', title: 'Account & integrations', sub: 'Not signed in', chev: 1 },
+      { icon: 'groups', title: 'Listen together', sub: 'Share a code and play the same music, in time', chev: 1 }]);
+    group('Audio quality', 'Only Theme, Liquid Glass and the tuning rows change this kit. The other switches only remember their state.', [
+      { icon: 'extension', title: 'Sources', sub: 'Where audio comes from and the order used', chev: 1 },
+      { subrow: true, divided: false, title: 'Direct Source Stream', ...tog('direct') },
+      { icon: 'wifi', title: 'On Wi-Fi', chev: 1 },
+      { icon: 'cell', title: 'On mobile data', chev: 1 },
+      { icon: 'dolby', title: 'Dolby Atmos', sub: 'Play the more immersive, surround version of a song when there is one.', ...tog('dolby') }]);
+    group(null, null, CATS.map(c => ({ icon: c[2], title: c[1], chev: 1, on: () => openPage('cat:' + c[0]) })));
+  } else if (page === 'cat:APPEARANCE'){
+    const rows = [
+      { icon: 'brightness', title: 'Theme', seg: { opts: ['System', 'Light', 'Dark'], sel: ST.themeMode, on: setThemeMode } },
+      { icon: 'sparkle', title: 'Renderer (reload)', seg: { opts: ['Auto', 'WebGPU', 'WebGL2', 'Canvas'], sel: Math.max(0, RENDERERS.indexOf(ST.renderer)), on: setRenderer } },
+      { icon: 'font', title: 'Font', value: 'Default', chev: 1 },
+      { icon: 'motionoff', title: 'Reduce animation', sub: "Freezes the main player's gradient instead of drifting", ...tog('reduceAnim') },
+      { icon: 'blur', title: 'Reduce dynamic blur', sub: 'Swaps frosted glass for solid fills across the app', ...tog('reduceBlur') },
+      { icon: 'gradient', title: 'Disable blend effects', sub: 'Shows player icons, text and dark menus in plain white instead of tinting them with the artwork', ...tog('blend') },
+      { icon: 'sparkle', title: 'Liquid Glass', sub: 'Real refracting glass on the floating nav bar. Android 12+ only; uses more GPU.', sw: () => P.glass, on: () => { P.glass = !P.glass; blurDirty = glyphDirty = true; haptic(10); refreshPage(); } }];
+    if (P.glass) rows.push(
+      { subrow: true, divided: false, title: 'Better Performance for Glass', sw: () => P.frost, on: () => { P.frost = !P.frost; blurDirty = glyphDirty = true; haptic(10); refreshPage(); } },
+      { subrow: true, divided: false, title: 'Progressive Blur', ...tog('progBlur', () => { blurDirty = true; }) });
+    group(null, 'Only Theme, Liquid Glass and the tuning rows change this kit. The other switches only remember their state.', rows, 0);
+    if (P.glass){
+      group('Liquid Glass tuning', 'BitChord values: blur 8, lens 0.5 / 0.5, surface 0.4, vibrancy 1.', [
+        psl('blur', 'Blur radius (dp)', 0, 32, .5), psl('lensH', 'Lens height (× 48dp)', 0, 1, .01), psl('lensA', 'Lens amount (× 48dp)', 0, 1, .01),
+        psl('tint', 'Surface opacity', 0, 1, .01), psl('vib', 'Vibrancy', 0, 2, .05), psl('lensZoom', 'Tab pill zoom when lifted (estimate)', 1, 1.5, .01),
+        psl('res', 'Backdrop sample resolution (× screen; BitChord 0.33)', .1, 1, .01), psl('iconBlurPx', 'Icon blur while showing/hiding (px, estimate)', 0, 16, .5),
+        { subrow: true, divided: true, title: 'Touch glow', ...ptog('glowOn') }, { subrow: true, divided: true, title: 'Noise on touch glow (guess)', ...ptog('glowNoise') }, { subrow: true, divided: true, title: 'Chromatic aberration', ...ptog('chroma') }, { subrow: true, divided: true, title: 'Depth effect', ...ptog('depth') }, { subrow: true, divided: false, title: 'Depth + colour fringes follow pill sides (differs from BitChord)', ...ptog('pillDepth') },
+        { subrow: true, divided: false, title: 'Blur icons while showing/hiding (estimate)', ...ptog('iconBlur') },
+        { subrow: true, divided: false, title: 'Performance HUD (diagnostics)', ...ptog('hud') },
+        { subrow: true, divided: false, title: 'Accent on selected tab', ...ptog('accent') }]);
+      group('Touch, menu and thumbs (estimates)', 'Estimates, not Apple values. Replace them after measuring a screen recording of a real iPhone. Haptic feedback uses the Vibration API: Android Chrome only, no effect on iPhone or desktop.', [
+        psl('pressScale', 'Press scale', 1, 1.25, .01), psl('pressDamp', 'Press damping', .3, 1, .01), psl('relDamp', 'Release bounce damping', .15, 1, .01),
+        psl('touchGlow', 'Touch glow', 0, 1, .05), psl('glowNoiseAmt', 'Touch glow noise (guess)', 0, 1, .05), psl('menuDamp', 'Menu morph damping', .4, 1, .01),
+        { subrow: true, divided: true, title: 'Haptic feedback', ...tog('haptic') },
+        { icon: 'perf', title: 'Reset to BitChord values', divided: true, on: () => { Object.assign(P, DEFAULTS); blurDirty = glyphDirty = true; refreshPage(); } }]);
+    }
+  } else {
+    group(null, 'This category is not ported to the kit yet. Its rows live in BitChord’s SettingsSheet.kt.', [], 0);
+  }
+  contentH = y + 240; prims = out;
+}
+function syncA11y(){
+  const box = $('#a11y');
+  if (!S.nav.length){ if (a11yKey){ box.textContent = ''; a11yEls.clear(); a11yKey = ''; FOCUSKEY = null; } return; }
+  const pk = S.nav.join('>'); if (pk !== a11yKey){ box.textContent = ''; a11yEls.clear(); a11yKey = pk; FOCUSKEY = null; const h = document.createElement('h1'); h.textContent = pageTitle(); box.appendChild(h); }
+  const live = new Set();
+  for (const a of A11Y){ live.add(a.key); let e = a11yEls.get(a.key);
+    if (!e){ e = document.createElement(a.kind === 'range' ? 'input' : 'button'); e.setAttribute('tabindex', '0'); e.style.pointerEvents = 'auto';
+      if (a.kind === 'range'){ e.type = 'range'; e.addEventListener('input', () => { const q = e._a.sl; q.set(+e.value); refreshPage(); }); }
+      else { e.setAttribute('role', a.kind === 'switch' ? 'switch' : a.kind === 'radio' ? 'radio' : 'button'); e.addEventListener('click', () => e._a.act()); }
+      e.addEventListener('focus', () => { FOCUSKEY = a.key; setScroll(e._a.y - 220); refreshPage(); }); e.addEventListener('blur', () => { if (FOCUSKEY === a.key){ FOCUSKEY = null; refreshPage(); } });
+      box.appendChild(e); a11yEls.set(a.key, e); }
+    e._a = a; e.setAttribute('aria-label', a.label);
+    if (a.kind === 'range'){ e.min = a.sl.min; e.max = a.sl.max; e.step = a.sl.step; e.value = a.sl.get(); }
+    else if (a.kind === 'switch') e.setAttribute('aria-checked', a.get() ? 'true' : 'false');
+    else if (a.kind === 'radio') e.setAttribute('aria-checked', a.checked ? 'true' : 'false'); }
+  for (const [k, el] of a11yEls) if (!live.has(k)){ el.remove(); a11yEls.delete(k); }
+}
+function onTap(e){ if (!S.nav.length) return; const r = hit.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top + S.scrollY; const h = HITS.find(h => h.fn && y >= h.y && y < h.y + h.h && (h.x === undefined || (x >= h.x && x < h.x + h.w))); if (h) h.fn(); }
+let sdrag = null, pressed = null, hold = null;
+const zoneAt = e => { const r = hit.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top + S.scrollY; return HITS.find(h => (h.drag || h.press) && y >= h.y && y < h.y + h.h && (h.x === undefined || (x >= h.x && x < h.x + h.w))); };
+const relX = e => e.clientX - hit.getBoundingClientRect().left;
+
+/* ============ WebGL2 ============ */
+const RURL = new URLSearchParams(location.search).get('renderer'), RPICK = RENDERERS.includes(RURL) ? RURL : RENDERERS.includes(ST.renderer) ? ST.renderer : 'auto', SKIP_GPU = (() => { try { return sessionStorage.getItem('lgSkipGPU') === '1'; } catch (e) { return false; } })();
+const pickRenderer = (pick, skip) => { const gpu = pick === 'webgpu' && !skip; return { gpu, gl: pick !== 'canvas' && !gpu }; };   // webgpu gagal (skip) -> gl true -> WebGL2; canvas -> tidak ada konteks GPU
+const { gpu: WANT_GPU, gl: WANT_GL } = pickRenderer(RPICK, SKIP_GPU);
+const gl = WANT_GL ? glc.getContext('webgl2', { antialias: false, alpha: false }) : null;     // konteks GL hanya dibuat kalau memang dipakai
+let GL_OK = !!gl, HIC = null;   // HIC: 'old' (layoutsubtree, texElementImage2D) | 'new' (content=drawable, texElementSubImage2D) | null
+let progBlit, progDown, progBlur, progCompose, progGlass, vao, sceneTex, finalTex, finalFb, compTex, glyphTex, lowA, lowB, lowC, lowD, fbA, fbB, fbC, fbD, progVBlur, bw = 1, bh = 1, lowScale = 0;
+
+const VS_FULL = `#version 300 es
+layout(location=0) in vec2 a; uniform float u_flip; out vec2 v_uv;
+void main(){ v_uv=vec2(a.x, mix(a.y,1.-a.y,u_flip)); gl_Position=vec4(a*2.-1.,0.,1.); }`;
+const FS_BLIT = `#version 300 es
+precision highp float; in vec2 v_uv; out vec4 o; uniform sampler2D u_tex; void main(){ o=vec4(texture(u_tex,v_uv).rgb,1.); }`;
+const FS_DOWN = `#version 300 es
+precision highp float; in vec2 v_uv; out vec4 o; uniform sampler2D u_tex; uniform vec2 u_texel; uniform float u_sat;
+void main(){
+  vec3 c=vec3(0.);
+  for(int y=-1;y<=1;y++) for(int x=-1;x<=1;x++) c+=texture(u_tex,v_uv+vec2(float(x),float(y))*u_texel).rgb;
+  c/=9.; float inv=1.-u_sat; float r=.213*inv, g=.715*inv, b=.072*inv;     // colorControls(saturation)
+  mat3 m=mat3(r+u_sat,r,r, g,g+u_sat,g, b,b,b+u_sat);
+  o=vec4(clamp(m*c,0.,1.),1.);
+}`;
+const FS_BLUR = `#version 300 es
+precision highp float; in vec2 v_uv; out vec4 o; uniform sampler2D u_tex; uniform vec2 u_dir; uniform float u_lim, u_stp; uniform float u_w[25];
+void main(){
+  vec3 acc=texture(u_tex,v_uv).rgb*u_w[0]; float ws=u_w[0];
+  for(int i=1;i<=24;i++){ float fi=float(i)*u_stp; if(fi>u_lim+.001) break; float w=u_w[i]; acc+=(texture(u_tex,v_uv+u_dir*fi).rgb+texture(u_tex,v_uv-u_dir*fi).rgb)*w; ws+=2.*w; }
+  o=vec4(acc/ws,1.);
+}`;
+/* Progressive top blur = BitChord TopFadeBlur (Haze HazeProgressive.verticalGradient, easing EaseInOut, 1 -> 0).
+   Haze varies the blur intensity per pixel; here the Gaussian sigma follows the eased intensity (24dp at the very top edge, none at the strip's foot).
+   Two separable passes at the backdrop sample resolution (BitChord: Fixed(0.33)), over the top strip only. Past the top of the screen the blur settles into the page colour. */
+const EASE_GLSL = `float eio(float x){ x=clamp(x,0.,1.); float s=x; for(int i=0;i<6;i++){ float q=1.-s; float bx=3.*q*q*s*.42+3.*q*s*s*.58+s*s*s; float d=3.*q*q*.42+6.*q*s*.16+3.*s*s*.42; s=clamp(s-(bx-x)/max(d,1e-3),0.,1.); } float q=1.-s; return 3.*q*s*s+s*s*s; }   // CubicBezier(.42,0,.58,1) = Compose EaseInOut
+`;
+const FS_VBLUR = `#version 300 es
+precision highp float; in vec2 v_uv; out vec4 o; uniform sampler2D u_tex; uniform vec2 u_dir, u_view; uniform vec3 u_bg; uniform float u_topH, u_sig;
+${EASE_GLSL}
+vec3 sp(vec2 uv){ return uv.y<0. ? u_bg : texture(u_tex,uv).rgb; }
+void main(){
+  float I=1.-eio(v_uv.y*u_view.y/u_topH), sg=u_sig*I;
+  if(sg<.05){ o=vec4(texture(u_tex,v_uv).rgb,1.); return; }
+  // taps are placed at most ~2 texels apart with 36 per side (was 12, spaced up to 5 texels): with fewer, a big sigma skipped texels and left a grid/comb pattern. The reach follows sigma continuously (no ceil), so rows do not band.
+  float lim=3.2*sg, stp=max(1.,lim/36.); vec3 acc=sp(v_uv); float ws=1.;
+  for(int i=1;i<=36;i++){ float fi=float(i)*stp; if(fi>lim+.001) break; float w=exp(-fi*fi/(2.*sg*sg)); vec2 d=u_dir*fi; acc+=(sp(v_uv+d)+sp(v_uv-d))*w; ws+=2.*w; }
+  o=vec4(acc/ws,1.);
+}`;
+/* page + progressive top blur strip (handed back to the page over its last 40%, BitChord FootFade DstIn) + bottom scrim (BottomFadeScrim) */
+const FS_COMPOSE = `#version 300 es
+precision highp float; in vec2 v_uv; out vec4 o;
+uniform sampler2D u_page, u_tb; uniform vec2 u_view; uniform vec3 u_bg; uniform float u_scrimH, u_topH, u_topOn;
+${EASE_GLSL}
+void main(){
+  vec3 c=texture(u_page,v_uv).rgb; float y=v_uv.y*u_view.y;
+  float tt=y/u_topH;
+  if(u_topOn>.5 && tt<1.){ float foot=tt>.6 ? 1.-eio((tt-.6)/.4) : 1.; vec3 bl=texture(u_tb,v_uv).rgb; bl+=(fract(sin(dot(gl_FragCoord.xy,vec2(12.9898,78.233)))*43758.5453)-.5)/255.; c=mix(c,bl,foot); }   // +-0.5/255 dither: dark blurred gradients band in 8-bit
+  
+  float st=(y-(u_view.y-u_scrimH))/u_scrimH; if(st>0.){ st=clamp(st,0.,1.); c=mix(c,u_bg,st*st*st); }
+  o=vec4(c,1.);
+}`;
+const VS_GLASS = `#version 300 es
+layout(location=0) in vec2 a; uniform vec2 u_view; uniform vec4 u_rect; uniform float u_margin; out vec2 v_css;
+void main(){ vec2 p=u_rect.xy-u_margin+a*(u_rect.zw+2.*u_margin); v_css=p; gl_Position=vec4(p.x/u_view.x*2.-1., 1.-p.y/u_view.y*2., 0., 1.); }`;
+const FS_GLASS = `#version 300 es
+precision highp float;
+in vec2 v_css; out vec4 o;
+uniform vec2 u_view; uniform vec4 u_rect; uniform float u_radius;
+uniform sampler2D u_tex; uniform float u_texFlip;
+uniform float u_refH, u_refA, u_depth, u_chroma, u_pillDepth;
+uniform vec4 u_tint; uniform float u_opacity; uniform float u_hlAlpha, u_hlInner; uniform vec3 u_shadow;
+uniform vec3 u_touch; uniform float u_gn; uniform vec4 u_clip;   // optional rounded-rect mask (w=0: off), radius = min(w,h)/2
+float sdRR(vec2 c, vec2 hs, float r);
+float clipMask(){ if(u_clip.w<=0.) return 1.; vec2 hs=.5*u_clip.zw; float sd=sdRR(v_css-u_clip.xy-hs,hs,min(hs.x,hs.y)); return clamp(.5-sd/max(fwidth(sd),1e-4),0.,1.); }
+uniform float u_zoom; uniform float u_edge, u_flat, u_useTab; uniform sampler2D u_tab; uniform vec4 u_tabRect; uniform vec4 u_fill;
+
+// ---- RoundedRectSDF (Kyant0/backdrop) ----
+float sdRR(vec2 c, vec2 hs, float r){ vec2 cc=abs(c)-(hs-vec2(r)); return length(max(cc,0.))-r+min(max(cc.x,cc.y),0.); }
+vec2 gradSd(vec2 c, vec2 hs, float r){
+  vec2 cc=abs(c)-(hs-vec2(r));
+  if(cc.x>=0.||cc.y>=0.){ vec2 m=max(cc,0.); float l=length(m); return sign(c)*(l>1e-5? m/l : vec2(0.)); }
+  float gx=step(cc.y,cc.x); return sign(c)*vec2(gx,1.-gx);
+}
+vec2 nrm(vec2 v){ float l=length(v); return l>1e-5? v/l : vec2(0.); }
+float circleMap(float x){ return 1.-sqrt(max(1.-x*x,0.)); }
+
+// ---- Gaussian-blurred rounded rect (Skia BlurMaskFilter look) ----
+float gauss(float x,float s){ return exp(-x*x/(2.*s*s))/(2.50662827*s); }
+float erfa(float x){ float s=sign(x),a=abs(x); x=1.+(.278393+(.230389+.078108*(a*a))*a)*a; x*=x; return s-s/(x*x); }
+float rbX(float x,float y,float s,float corner,vec2 hs){
+  float delta=min(hs.y-corner-abs(y),0.); float curved=hs.x-corner+sqrt(max(0.,corner*corner-delta*delta));
+  vec2 integral=.5+.5*vec2(erfa((x-curved)*(.70710678/s)),erfa((x+curved)*(.70710678/s))); return integral.y-integral.x;
+}
+float boxShadow(vec2 p, vec2 hs, float s, float corner){
+  float low=p.y-hs.y, high=p.y+hs.y; float st=clamp(-3.*s,low,high), en=clamp(3.*s,low,high);
+  float step_=(en-st)/6., y=st+step_*.5, v=0.;
+  for(int i=0;i<6;i++){ v+=rbX(p.x,p.y-y,s,corner,hs)*gauss(y,s)*step_; y+=step_; } return v;
+}
+
+vec3 S(vec2 lp){
+  lp=.5*u_rect.zw+(lp-.5*u_rect.zw)/u_zoom;          // lens magnification about the pill centre
+  vec2 css=u_rect.xy+lp; vec2 uv=css/u_view; uv.y=mix(uv.y,1.-uv.y,u_texFlip);
+  vec3 c=textureLod(u_tex,uv,0.).rgb;
+  if(u_useTab>.5){                                   // pill backdrop: page+bar glass, then fill, then the tab row on top
+    c=mix(c,u_fill.rgb,u_fill.a);
+    vec2 tu=(css-u_tabRect.xy)/u_tabRect.zw;
+    if(tu.x>=0.&&tu.x<=1.&&tu.y>=0.&&tu.y<=1.){ vec4 t=textureLod(u_tab,tu,0.); c=c*(1.-t.a)+t.rgb; }
+  }
+  return c;
+}
+
+void main(){
+  vec2 hs=.5*u_rect.zw; vec2 local=v_css-u_rect.xy; vec2 cc=local-hs;
+  float sd=sdRR(cc,hs,u_radius); float px=max(fwidth(sd),1e-4); float cover=clamp(.5-sd/px,0.,1.);
+  if(u_flat>.5){ float a=u_tint.a*cover*u_opacity*clipMask(); o=vec4(u_tint.rgb*a,a); return; }
+
+  float sh=0.;
+  if(u_shadow.z>0.){ float sg=.57735*u_shadow.x+.5; if(sdRR(cc-vec2(0.,u_shadow.y),hs,u_radius)<4.5*sg) sh=u_shadow.z*boxShadow(cc-vec2(0.,u_shadow.y),hs,sg,min(u_radius,min(hs.x,hs.y))); }
+
+  vec3 rgb=vec3(0.);
+  if(cover>0.){
+    vec3 col;
+    if(u_refH>0. && u_refA>0. && -sd<u_refH){
+      float sdn=min(sd,0.);
+      float d=circleMap(1.-(-sdn)/u_refH)*(-u_refA);
+      float gr=min(u_radius*1.5,min(hs.x,hs.y));
+      vec2 radial=nrm(cc);                                   // BitChord/Kyant0: direction from the centre (circle-like; on a wide pill it shears sideways)
+      if(u_pillDepth>.5){ float rr=min(u_radius,min(hs.x,hs.y)); radial=nrm(cc-clamp(cc,-(hs-vec2(rr)),hs-vec2(rr))); }   // pill-aware: from the nearest point of the inner core rect
+      vec2 grad=nrm(gradSd(cc,hs,gr)+u_depth*radial);
+      vec2 rc=local+d*grad;
+      if(u_chroma>.5){
+        float di=u_pillDepth>.5 ? u_chroma*.5 : u_chroma*((cc.x*cc.y)/(hs.x*hs.y)); vec2 dc=d*grad*di;   // BitChord: signed x*y term (flips per quadrant, zero on the axes); pill mode: one consistent direction along the refraction
+        vec3 red=S(rc+dc), orange=S(rc+dc*(2./3.)), yellow=S(rc+dc*(1./3.)), green=S(rc), cyan=S(rc-dc*(1./3.)), blue=S(rc-dc*(2./3.)), purple=S(rc-dc);
+        col.r=red.r/3.5+orange.r/3.5+yellow.r/3.5+purple.r/7.;
+        col.g=orange.g/7.+yellow.g/3.5+green.g/3.5+cyan.g/3.5;
+        col.b=cyan.b/3.+blue.b/3.+purple.b/3.;
+      } else col=S(rc);
+    } else col=S(local);
+    col=mix(col,u_tint.rgb,u_tint.a);
+    { float td=length(v_css-u_touch.xy); float g=u_touch.z*.28*exp(-td*td/(2.*72.*72.)); float nz=fract(sin(dot(gl_FragCoord.xy,vec2(12.9898,78.233)))*43758.5453); col+=vec3(g*(1.+u_gn*(nz*2.-1.))); }   // glow is modulated by per-pixel grain (static, no flicker); u_gn=0 = smooth. Whether iOS has noise here is unverified   // touch-point illumination (reaches neighbouring glass)                       // onDrawSurface
+    float inner=-sd; float gr2=min(u_radius*1.5,min(hs.x,hs.y));
+    float band=1.-smoothstep(u_hlInner-.3,u_hlInner+.3,inner);
+    float inten=abs(dot(gradSd(cc,hs,gr2),vec2(.70710678)));  // Highlight.Default: angle 45deg
+    col+=vec3(.5*inten*band*u_hlAlpha);
+    col=mix(col,vec3(1.),u_edge*.10*(1.-smoothstep(.5-.3,.5+.3,inner))); // GLASS_EDGE_COLOR hairline, top controls only
+    rgb=col;
+  }
+  float a=cover*u_opacity; float shA=sh*(1.-cover)*u_opacity;
+  o=vec4(rgb*a,a+shA)*clipMask();
+}`;
+/* flat glyph layer quad (premultiplied RGBA from canvas2D), clipped to a rounded rect */
+const FS_QUAD = `#version 300 es
+precision highp float; in vec2 v_css; out vec4 o;
+uniform vec4 u_rect, u_clip; uniform float u_clipR, u_alpha, u_blurPx; uniform sampler2D u_tab;
+float sdRR(vec2 c, vec2 hs, float r){ vec2 cc=abs(c)-(hs-vec2(r)); return length(max(cc,0.))-r+min(max(cc.x,cc.y),0.); }
+void main(){
+  vec2 tu=(v_css-u_rect.xy)/u_rect.zw; vec4 t=texture(u_tab,tu);
+  if(u_blurPx>.05){ vec2 r=u_blurPx/u_rect.zw; vec4 a=t; for(int i=0;i<8;i++){ float an=float(i)*.785398; a+=texture(u_tab,tu+vec2(cos(an),sin(an))*r)+texture(u_tab,tu+vec2(cos(an),sin(an))*r*.5); } t=a/17.; }
+  vec2 hs=.5*u_clip.zw; float sd=sdRR(v_css-u_clip.xy-hs,hs,u_clipR); float m=clamp(.5-sd/max(fwidth(sd),1e-4),0.,1.);
+  o=t*(m*u_alpha);
+}`;
+
+function compile(type, src){ const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; }
+function mk(vs, fs){ const p = gl.createProgram(); gl.attachShader(p, compile(gl.VERTEX_SHADER, vs)); gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs)); gl.linkProgram(p); if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p)); p.loc = {}; return p; }
+const U = (p, n) => (n in p.loc ? p.loc[n] : (p.loc[n] = gl.getUniformLocation(p, n)));
+function tex(w, h, rgb = false){
+  const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+  if (rgb) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB8, w, h, 0, gl.RGB, gl.UNSIGNED_BYTE, null); else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE); return t;
+}
+function fbo(t){ const f = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, f); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0); return f; }
+function initGL(){
+  progBlit = mk(VS_FULL, FS_BLIT); progDown = mk(VS_FULL, FS_DOWN); progBlur = mk(VS_FULL, FS_BLUR); progCompose = mk(VS_FULL, FS_COMPOSE); progVBlur = mk(VS_FULL, FS_VBLUR);
+  progGlass = mk(VS_GLASS, FS_GLASS); progQuad = mk(VS_GLASS, FS_QUAD);
+  vao = gl.createVertexArray(); gl.bindVertexArray(vao); const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0,0, 1,0, 0,1, 1,1]), gl.STATIC_DRAW); gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+}
+let progQuad;
+function allocGL(){
+  const cw = glc.width, ch = glc.height;
+  [sceneTex, finalTex, compTex].forEach(t => t && gl.deleteTexture(t)); if (finalFb) gl.deleteFramebuffer(finalFb);
+  sceneTex = tex(cw, ch); finalTex = tex(cw, ch); finalFb = fbo(finalTex); compTex = tex(cw, ch, true);
+  if (!glyphTex) glyphTex = tex(2, 2);
+  lowScale = 0; ensureLow();
+}
+const topBlurOn = () => !!(ST.progBlur && P.glass && (GL_OK || GPU));
+const TOP_STRIP_H = () => TOP_BAR_H + 16;       // BitChord: topBarHeight() + FADE_RUN (16dp)
+function composePass(cw, ch, col){
+  const on = topBlurOn(), topH = TOP_STRIP_H();
+  if (on){
+    ensureLow();
+    const sig = 24 * (bw / W), tx = [1 / cw, 1 / ch], dk = Math.max(0, (cw / bw - 1) / 2), reach = 3 * 24 + 4;   // sigma 24dp, 3 sigma of vertical reach
+    const band = m => gl.scissor(0, 0, bw, clamp(Math.ceil((topH + m) / H * bh), 1, bh));   // row 0 = top of the page
+    gl.enable(gl.SCISSOR_TEST);
+    band(reach); pass(progDown, fbC, bw, bh, sceneTex, () => { gl.uniform2f(U(progDown, 'u_texel'), tx[0] * dk, tx[1] * dk); gl.uniform1f(U(progDown, 'u_sat'), 1); });
+    const vb = dx => { gl.uniform2f(U(progVBlur, 'u_dir'), dx ? 1 / bw : 0, dx ? 0 : 1 / bh); gl.uniform2f(U(progVBlur, 'u_view'), W, H); gl.uniform3f(U(progVBlur, 'u_bg'), col.bg[0], col.bg[1], col.bg[2]); gl.uniform1f(U(progVBlur, 'u_topH'), topH); gl.uniform1f(U(progVBlur, 'u_sig'), sig); };
+    pass(progVBlur, fbD, bw, bh, lowC, () => vb(true));
+    band(0); pass(progVBlur, fbC, bw, bh, lowD, () => vb(false));
+    gl.disable(gl.SCISSOR_TEST);
+  }
+  pass(progCompose, finalFb, cw, ch, sceneTex, () => {
+    gl.uniform1i(U(progCompose, 'u_page'), 0); gl.uniform2f(U(progCompose, 'u_view'), W, H); gl.uniform3f(U(progCompose, 'u_bg'), col.bg[0], col.bg[1], col.bg[2]); gl.uniform1f(U(progCompose, 'u_scrimH'), FLOOR + 254);
+    gl.uniform1f(U(progCompose, 'u_topH'), topH); gl.uniform1f(U(progCompose, 'u_topOn'), on ? 1 : 0);
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, on ? lowC : sceneTex); gl.uniform1i(U(progCompose, 'u_tb'), 1); gl.activeTexture(gl.TEXTURE0);
+  });
+}
+const lowSize = () => { const sc = P.frost ? Math.min(P.res, FROST_SCALE) : P.res; return { sc, w: Math.max(2, Math.round(glc.width * sc)), h: Math.max(2, Math.round(glc.height * sc)) }; };
+/* the glass only ever samples the low-res copy inside two strips (top controls + menu, bottom bar): compute only those (+ margin + blur reach). Rows are [first, count] from the top of the page. */
+function lowStrips(sig){
+  const reach = 3 * sig * (H / bh) + 2, mr_ = menuRects().full, mg = 72;
+  const topEnd = mr_.y + mr_.h + mg, botStart = Math.min(EX.acc.y, IN.acc.y, EX.tabs.y, IN.tab.y, EX.search.y, IN.search.y, EX.tabs.y - PILL_GROW) - mg;
+  const strips = botStart <= topEnd + 2 * reach ? [[0, H]] : [[0, topEnd], [botStart, H]];
+  const band = (y0, y1, m) => { const a0 = clamp(Math.floor((y0 - m) / H * bh), 0, bh), a1 = clamp(Math.ceil((y1 + m) / H * bh), 0, bh); return [a0, Math.max(0, a1 - a0)]; };
+  return strips.map(([y0, y1]) => ({ rowsM: band(y0, y1, reach), rows0: band(y0, y1, 0) }));
+}
+function ensureLow(){
+  const sc = P.frost ? Math.min(P.res, FROST_SCALE) : P.res; if (sc === lowScale && lowA) return; lowScale = sc;
+  [lowA, lowB, lowC, lowD].forEach(t => t && gl.deleteTexture(t)); [fbA, fbB, fbC, fbD].forEach(f => f && gl.deleteFramebuffer(f));
+  bw = Math.max(2, Math.round(glc.width * sc)); bh = Math.max(2, Math.round(glc.height * sc));
+  lowA = tex(bw, bh); fbA = fbo(lowA); lowB = tex(bw, bh); fbB = fbo(lowB); lowC = tex(bw, bh); fbC = fbo(lowC); lowD = tex(bw, bh); fbD = fbo(lowD); blurDirty = true;
+}
+const blurW = new Float32Array(25), blurPrm = { sig: -1, lim: 0, stp: 1 };
+function blurWeights(sig){         // same Gaussian as before, computed once per pass instead of once per pixel and tap
+  if (blurPrm.sig === sig) return; const sg = Math.max(sig, .0001), lim = Math.ceil(3 * sg), stp = Math.max(1, lim / 24);
+  for (let i = 0; i <= 24; i++){ const fi = i * stp; blurW[i] = Math.exp(-fi * fi / (2 * sg * sg)); }
+  blurPrm.sig = sig; blurPrm.lim = lim; blurPrm.stp = stp;
+}
+const blurUniforms = (dx, dy, sig) => { blurWeights(sig); gl.uniform2f(U(progBlur, 'u_dir'), dx, dy); gl.uniform1f(U(progBlur, 'u_lim'), blurPrm.lim); gl.uniform1f(U(progBlur, 'u_stp'), blurPrm.stp); gl.uniform1fv(U(progBlur, 'u_w'), blurW); };
+function pass(prog, fb, w, h, texture, setup){
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fb); gl.viewport(0, 0, w, h); gl.disable(gl.BLEND); gl.useProgram(prog);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texture); gl.uniform1i(U(prog, 'u_tex'), 0); gl.uniform1f(U(prog, 'u_flip'), fb ? 0 : 1);
+  setup && setup(); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+
+/* ============ HTML-in-Canvas feature detection (live DOM as backdrop) ============ */
+function detectHIC(){
+  if (!GL_OK || (DEBUG && /[?&]nohic\b/.test(location.search))) return null;
+  try {
+    if ('texElementSubImage2D' in WebGL2RenderingContext.prototype && 'captureElementImage' in HTMLCanvasElement.prototype){ glc.setAttribute('content', 'drawable'); return 'new'; }
+    if (gl.texElementImage2D && gl.texElementImage2D.length === 3 && 'layoutSubtree' in HTMLCanvasElement.prototype) return 'old';
+  } catch (e) {}
+  return null;
+}
+let hicOK = false;
+function hicUpload(){
+  gl.bindTexture(gl.TEXTURE_2D, sceneTex);
+  if (HIC === 'new'){
+    if (!hicOK){ gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, glc.width, glc.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null); }
+    gl.texElementSubImage2D(gl.TEXTURE_2D, 0, 0, 0, pageEl);
+  } else gl.texElementImage2D(gl.TEXTURE_2D, gl.RGBA8, pageEl);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  hicOK = true;
+}
+
+/* ============ GlassPillMotion (port of the Kotlin dynamics: same stiffnesses, damping, taus) ============ */
+class PillMotion {
+  constructor(i){ Object.assign(this, { index: i, position: i, liftX: 0, liftY: 0, material: 0, deviation: 0, glassPresence: 0, isFlat: true, stepPx: 0,
+    travelPos: i, travelVel: 0, travelTarget: i, travelFrom: i, travelActive: false, lifted: false, lx: 0, lxv: 0, ly: 0, lyv: 0, lp: 0, lpv: 0,
+    dragging: false, dragTarget: 0, dragFollow: i, travelSign: 0, travelSignEased: 0, handover: 1, squash: 0, hist: [], tracking: false, sqv: 0 }); }
+  animateTo(n){ if (n === this.index) return; this.index = n; this.travelActive = true; this.lifted = true; this.travelFrom = this.travelPos; this.travelTarget = n; this.travelSign = sgn(n - this.travelFrom); this.isFlat = false; }
+  snapTo(t){ Object.assign(this, { index: t, travelPos: t, travelTarget: t, travelFrom: t, travelVel: 0, travelActive: false, dragging: false, lifted: false, lx: 0, lxv: 0, ly: 0, lyv: 0, lp: 0, lpv: 0, handover: 1, squash: 0, travelSign: 0, travelSignEased: 0 }); this.hist = []; this.tracking = false; this.publish(); this.isFlat = true; }
+  startDrag(){ this.dragging = true; this.travelActive = false; this.lifted = true; this.travelSign = 0; this.dragFollow = this.travelPos; this.dragTarget = this.travelPos; this.travelVel = 0; this.isFlat = false; }
+  hold(on){ this.held = on; if (on && !this.reduce){ this.lifted = true; this.isFlat = false; } }   // touch-down on the selected tab: lift at once (BitChord only lifts after the drag slop)
+  dragTo(p){ if (this.dragging) this.dragTarget = p; }
+  release(n){ if (!this.dragging) return; const from = this.dragFollow; this.dragging = false; this.index = n; this.travelActive = true; this.travelPos = from; this.travelVel = 0; this.travelFrom = from; this.travelTarget = n; this.travelSign = sgn(n - from); }
+  static spring(x, v, target, dt, k, c){ let t = dt; while (t > 0){ const s = Math.min(t, 1 / 240); v += (-k * (x - target) - c * v) * s; x += v * s; t -= s; } return [x, v]; }
+  static lift(x, v, target, dt, k, c){ const r = PillMotion.spring(x, v, target, dt, k, c); return (Math.abs(r[0] - target) < .0008 && Math.abs(r[1]) < .01) ? [target, 0] : r; }
+  travelProgress(){ const span = Math.abs(this.travelTarget - this.travelFrom); if (span < 1e-6) return 1; return clamp(1 - Math.abs(this.travelTarget - this.travelPos) / span, 0, 1); }
+  track(x, now, dt){                                           // PillSquashModel
+    if (!this.tracking){ this.tracking = true; this.hist = []; this.sqv = 0; }
+    this.hist.push([x, now]); const cutoff = now - .3; this.hist = this.hist.filter(h => h[1] >= cutoff);
+    let acc = 0; const h = this.hist;
+    if (h.length >= 3){ const vs = []; for (let i = 1; i < h.length; i++){ const d = h[i][1] - h[i - 1][1]; if (d <= 0) continue; vs.push([(h[i][0] - h[i - 1][0]) / d, (h[i][1] + h[i - 1][1]) / 2]); }
+      if (vs.length >= 2){ let tot = 0, n = 0; for (let i = 1; i < vs.length; i++){ const d = vs[i][1] - vs[i - 1][1]; if (d <= 0) continue; tot += (vs[i][0] - vs[i - 1][0]) / d; n++; } acc = n ? tot / n : 0; } }
+    const raw = clamp(acc * 0.00007, -.12, .12); this.sqv += (raw - this.sqv) * clamp(dt / .18, 0, 1); return this.sqv;
+  }
+  tick(dt, now){
+    let travelSettled = true;
+    if (this.travelActive){ const r = PillMotion.spring(this.travelPos, this.travelVel, this.travelTarget, dt, 280, 31.4); this.travelPos = r[0]; this.travelVel = r[1];
+      travelSettled = Math.abs(this.travelPos - this.travelTarget) < .003 && Math.abs(this.travelVel) < .05; if (travelSettled){ this.travelPos = this.travelTarget; this.travelVel = 0; } }
+    if (this.dragging) this.dragFollow += (this.dragTarget - this.dragFollow) * (1 - Math.exp(-dt / .05));
+    if (!this.dragging && !this.held && (travelSettled || this.travelProgress() >= .92)) this.lifted = false;
+    const lt = this.lifted ? 1 : 0;
+    [this.lx, this.lxv] = PillMotion.lift(this.lx, this.lxv, lt, dt, 250, 19); [this.ly, this.lyv] = PillMotion.lift(this.ly, this.lyv, lt, dt, 250, 22.1); [this.lp, this.lpv] = PillMotion.lift(this.lp, this.lpv, lt, dt, 1000, 63.3);
+    const liftSettled = !this.lifted && this.lx === 0 && this.ly === 0 && this.lp === 0;
+    if (this.travelActive && travelSettled && liftSettled && !this.dragging) this.travelActive = false;
+    const frac = this.dragging ? this.dragFollow : this.travelPos;
+    if (this.stepPx > 0){
+      this.squash = this.track(frac * this.stepPx, now, dt);
+      if (this.travelSignEased === 0) this.travelSignEased = this.travelSign;
+      else if (this.travelSignEased !== this.travelSign){ this.travelSignEased += (this.travelSign - this.travelSignEased) * (1 - Math.exp(-dt / .25)); if (Math.abs(this.travelSign - this.travelSignEased) < .01) this.travelSignEased = this.travelSign; }
+      const key = this.travelSignEased; if (key !== 0) this.squash = this.squash * (1 - Math.abs(key)) - key * Math.abs(this.squash);
+    }
+    const ht = this.lifted ? 0 : 1, tau = ht > this.handover ? .09 : .05; this.handover += (ht - this.handover) * (1 - Math.exp(-dt / tau)); if (Math.abs(ht - this.handover) < .002) this.handover = ht;
+    const settled = !this.travelActive && !this.dragging && liftSettled && Math.abs(this.squash) < .0005 && this.handover >= 1;
+    if (settled){ this.tracking = false; this.hist = []; this.squash = 0; this.sqv = 0; this.travelSign = 0; this.travelSignEased = 0; }
+    this.publish(); this.isFlat = settled; return !settled;
+  }
+  publish(){ this.position = this.dragging ? this.dragFollow : this.travelPos; this.material = clamp(this.lp, 0, 1); this.liftX = this.lx; this.liftY = this.ly; this.deviation = this.squash; this.glassPresence = clamp(1 - this.handover, 0, 1); }
+}
+const pill = new PillMotion(S.tab);
+
+/* ============ layout (GlassNavBar / FloatingTabBar geometry) ============ */
+const BOT = FLOOR + NAV_LIFT;                           // 21
+const R = (x, y, w, h) => ({ x, y, w, h });
+const EX = {}, IN = {};
+function buildLayoutX(){
+  const barW = W - 2 * NAV_G;
+  EX.search = R(W - NAV_G - TAB_ROW, 0, TAB_ROW, TAB_ROW);
+  EX.tabs = R(NAV_G, 0, barW - SP - TAB_ROW, TAB_ROW);
+  EX.acc = R(NAV_G, 0, barW, ACC_H);
+  IN.tab = R(INL_G, 0, INL_H, INL_H);
+  IN.search = R(W - INL_G - INL_H, 0, INL_H, INL_H);
+  IN.acc = R(INL_G + INL_H + INL_SP, 0, W - 2 * INL_G - 2 * INL_H - 2 * INL_SP, INL_H);
+}
+function setVertical(){
+  H = glc.clientHeight || 844;
+  EX.tabs.y = EX.search.y = H - BOT - TAB_ROW; EX.acc.y = EX.tabs.y - SP - ACC_H;
+  IN.tab.y = IN.search.y = IN.acc.y = H - (BOT + INL_LIFT) - INL_H;
+}
+const mix = (a, b, t) => R(lerp(a.x, b.x, t), lerp(a.y, b.y, t), lerp(a.w, b.w, t), lerp(a.h, b.h, t));
+const tabInnerW = () => EX.tabs.w - 2 * PILL_INSET, tabW = () => tabInnerW() / NT, rowH = () => TAB_ROW - 2 * PILL_INSET;
+const actionsW = CTRL + ACTION_GAP + CTRL + 2 * ACTION_EDGE;
+const topBack = R(0, 0, 0, 0), topActions = R(0, 0, 0, 0);
+function buildTop(){ Object.assign(topBack, R(BAR_G, STATUS + (TOP_H - CTRL) / 2, CTRL, CTRL)); Object.assign(topActions, R(W - BAR_G - actionsW, STATUS + (TOP_H - CTRL) / 2, actionsW, CTRL)); }
+
+/* ============ glyph layer (tab row as its own backdrop layer, drawn by canvas2D) ============ */
+const gcv = document.createElement('canvas'), gcx = gcv.getContext('2d', C2D);
+const iconScale = [1, 1, 1], iconScaleV = [0, 0, 0];
+let glyphDirty = true, glyphTexW = 0, glyphTexH = 0, accentCol = null;
+/* fade + blur on show/hide (opt-in estimate: iOS 26 may blur icons while they materialize; unverified) */
+const fb = (el, a) => { a = clamp(a, 0, 1); el.style.opacity = a; const px = P.iconBlur ? (1 - a) * P.iconBlurPx : 0; el.style.filter = (px > .05 && a > 0) ? `blur(${px.toFixed(2)}px)` : ''; };
+let curTitle = null;
+function setTopTitle(str){ if (str === curTitle) return; const first = curTitle === null; curTitle = str; const sp = $('#topTitle .tt'); sp.textContent = str; if (first || !P.iconBlur) return; sp.style.setProperty('--ibp', P.iconBlurPx + 'px'); sp.classList.remove('tin'); void sp.offsetWidth; sp.classList.add('tin'); }
+const colors = () => S.dark ? { fg: '#fff', bg: [0, 0, 0], tint: [0x12 / 255, 0x12 / 255, 0x12 / 255] } : { fg: '#000', bg: [1, 1, 1], tint: [0xFA / 255, 0xFA / 255, 0xFA / 255] };
+function drawGlyphs(){
+  const w = EX.tabs.w, h = EX.tabs.h, gw = Math.round(w * DPR), gh = Math.round(h * DPR), resized = gcv.width !== gw || gcv.height !== gh; if (resized){ gcv.width = gw; gcv.height = gh; }
+  const c = gcx; c.setTransform(DPR, 0, 0, DPR, 0, 0); c.clearRect(0, 0, w, h);
+  const tw = tabW(), fg = colors().fg, tabsOn = S.tab < NT;
+  for (let i = 0; i < NT; i++){
+    const sel = tabsOn && i === S.tab, s = iconScale[i], cxp = PILL_INSET + i * tw + tw / 2, cyp = PILL_INSET + TAB_VPAD + ICON / 2;
+    const col = sel ? (P.accent ? (accentCol ??= getComputedStyle(document.documentElement).getPropertyValue('--accent')) : fg) : fg; const alpha = sel ? 1 : .65;
+    c.save(); c.globalAlpha = alpha; c.translate(cxp, cyp); c.scale(s * ICON / 24, s * ICON / 24); c.translate(-12, -12);
+    c.strokeStyle = col; c.fillStyle = col; c.lineWidth = 1.9; c.lineCap = 'round'; c.lineJoin = 'round';
+    for (const e of P2D[['home', 'explore', 'library'][i]]){ if (e.f) c.fill(e.p); else c.stroke(e.p); }
+    c.restore();
+    c.save(); c.globalAlpha = alpha; c.fillStyle = col; c.font = `500 10px ${FONT}`; c.textAlign = 'center'; c.textBaseline = 'middle';
+    try { c.letterSpacing = '.5px'; } catch (e) {} c.fillText(TABS[i], cxp, PILL_INSET + TAB_VPAD + ICON + ICON_GAP + 6); c.restore();
+  }
+  if (GPU) uploadGlyphsGPU(gw, gh); else {
+  gl.bindTexture(gl.TEXTURE_2D, glyphTex); gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+  if (resized || glyphTexW !== gw || glyphTexH !== gh){ gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gcv); glyphTexW = gw; glyphTexH = gh; } else gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, gcv);
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false); }
+  glyphDirty = false;
+}
+
+/* ============ DOM sync ============ */
+const setR = (el, r) => { const k = r.x + ',' + r.y + ',' + r.w + ',' + r.h; if (el._r === k) return; el._r = k; el.style.left = r.x + 'px'; el.style.top = r.y + 'px'; el.style.width = r.w + 'px'; el.style.height = r.h + 'px'; };
+const Q = {}, q = sel => Q[sel] || (Q[sel] = $(sel)), sa = (el, k, v) => { if (el['_' + k] !== v){ el['_' + k] = v; el.setAttribute(k, v); } };
+$('#topBack').innerHTML = svg('back', 24);
+$('#topActions').innerHTML = `<span class="center" style="width:${CTRL}px;height:${CTRL}px;margin-left:${ACTION_EDGE}px">${svg('share', 24)}</span><span class="center" style="width:${CTRL}px;height:${CTRL}px;margin-left:${ACTION_GAP}px">${svg('more', 24)}</span>`;
+$('#searchIcon').innerHTML = svg('search', ICON); $('#accNext').innerHTML = svg('next', 24);
+const accMeta = $('#acc .meta'), accEl = $('#acc'), accPlay = $('#accPlay'), accNext = $('#accNext'), inlineIcon = $('#inlineIcon'), searchIcon = $('#searchIcon');
+function playIcon(){ accPlay.innerHTML = svg(S.playing ? 'pause' : 'play', 24); }
+playIcon();
+let L = null;   // current layout
+function applyDOM(){
+  const t = S.t, cf = colors().fg;
+  const v = clamp(t / .7, 0, 1), u = clamp((t - .55) / .45, 0, 1);
+  const tA = v * v * (3 - 2 * v), tAy = u * u * (3 - 2 * u), tT = 1 - Math.pow(1 - t, 3);
+  const eA = clamp(1 - tA * 3, 0, 1), eT = clamp(1 - tT * 3, 0, 1);
+  const acc0 = R(lerp(EX.acc.x, IN.acc.x, tA), lerp(EX.acc.y, IN.acc.y, tAy), lerp(EX.acc.w, IN.acc.w, tA), lerp(EX.acc.h, IN.acc.h, tA)), sc = S.accScale;
+  const acc = R(acc0.x + acc0.w * (1 - sc) / 2, acc0.y + acc0.h * (1 - sc) / 2, acc0.w * sc, acc0.h * sc);
+  const tabs = mix(EX.tabs, IN.tab, tT), search0 = mix(EX.search, IN.search, tT), search = scaleR(search0, SPR.srch.x);
+  const mr = menuRects(), mm = SPR.menu.x, menuR = mix(scaleR(topActions, SPR.act.x), mr.full, mm);
+  L = { acc, tabs, search, accBase: acc0, back: scaleR(topBack, SPR.back.x), menu: menuR, menuM: mm,
+        menuRad: Math.max(1, Math.min(lerp(topActions.h / 2, 26, clamp(mm, 0, 1)), menuR.w / 2, menuR.h / 2)) };
+  if (!S.nav.length && t > .01 && t < .99 && !applyDOM._warned){
+    const hit = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+    if (hit(acc0, tabs) || hit(acc0, search0)) { applyDOM._warned = true; console.warn('pill overlap bar', { acc0, tabs, search0 }); }
+  }
+  setR(accEl, acc0); accEl.style.transform = `scale(${sc})`; accEl.style.paddingLeft = '16px'; accEl.style.paddingRight = lerp(12, 8, tA) + 'px';
+  const slot = lerp(40, 32, tA), gl_ = lerp(29, 24, tA);
+  accPlay.style.width = accPlay.style.height = slot + 'px'; sa(accPlay.firstChild, 'width', gl_); sa(accPlay.firstChild, 'height', gl_);
+  accMeta.style.marginLeft = lerp(9, 8, tA) + 'px';
+  accNext.style.width = lerp(44, 0, clamp(tA * 1.6, 0, 1)) + 'px'; fb(accNext, eA); accNext.style.height = '40px'; accNext.style.marginLeft = '0';
+  setR(searchIcon, search0); searchIcon.style.transform = `scale(${SPR.srch.x})`; sa(searchIcon.firstChild, 'width', lerp(ICON, 26, t)); sa(searchIcon.firstChild, 'height', lerp(ICON, 26, t));
+  searchIcon.style.opacity = S.tab === SEARCH ? 1 : .65;
+  const ii = inlineIcon; setR(ii, IN.tab); fb(ii, t * 4); { const k = Math.min(S.tab, 2); if (ii._k !== k){ ii._k = k; ii.innerHTML = svg(['home', 'explore', 'library', 'search'][k], 28); } }
+  const th = q('#tabHit'); setR(th, tabs); th.style.pointerEvents = 'auto';
+  syncFallbackTabs(tabs, eT); setR(q('#searchHit'), search0);
+  fb(q('#topTitle'), clamp((S.scrollY - 70) / 30, 0, 1) * (1 - clamp(mm * 4, 0, 1))); setTopTitle(pageTitle());
+  // interactive top controls + menu that morphs out of the "more" button
+  q('#topBack').style.transform = `scale(${SPR.back.x})`; q('#topActions').style.transform = `scale(${SPR.act.x})`;
+  setR(q('#hitBack'), topBack); setR(q('#hitShare'), R(topActions.x + ACTION_EDGE, topActions.y, CTRL, CTRL)); setR(q('#hitMore'), mr.more);
+  fb(q('#topActions'), 1 - clamp((mm - .1) / .4, 0, 1));
+  for (const id of ['#hitShare', '#hitMore']) q(id).style.pointerEvents = S.menuOpen ? 'none' : '';
+  sa(q('#hitMore'), 'aria-expanded', S.menuOpen ? 'true' : 'false');
+  const me = q('#menu'); setR(me, menuR); me.style.borderRadius = L.menuRad + 'px'; me.style.display = mm > .003 ? 'block' : 'none'; me.style.pointerEvents = S.menuOpen ? '' : 'none'; me.classList.toggle('shut', !S.menuOpen);
+  fb(me.firstElementChild, (mm - .3) / .4);   // overlaps the capsule icons' fade (they run mm .5 -> .1), so the glass is never empty between them q('#menuScrim').style.display = S.menuOpen ? 'block' : 'none';
+}
+function scaleR(r, k){ return R(r.x + r.w * (1 - k) / 2, r.y + r.h * (1 - k) / 2, r.w * k, r.h * k); }
+function menuRects(){
+  const more = R(topActions.x + ACTION_EDGE + CTRL + ACTION_GAP, topActions.y, CTRL, CTRL);
+  return { more, full: R(topActions.x + topActions.w - MENU_W, topActions.y, MENU_W, 4 * 44 + 16) };
+}
+
+/* ============ rendering ============ */
+let sceneDirty = true, blurDirty = true, needsRender = true;
+const hlInner = Math.ceil(.5 * DPR) / DPR;
+function drawGlassItem(it){
+  const p = progGlass; gl.uniform4f(U(p, 'u_rect'), it.x, it.y, it.w, it.h); gl.uniform1f(U(p, 'u_margin'), it.margin ?? 58); gl.uniform1f(U(p, 'u_radius'), it.rad ?? Math.min(it.w, it.h) / 2);
+  gl.uniform1f(U(p, 'u_refH'), it.refH || 0); gl.uniform1f(U(p, 'u_refA'), it.refA || 0); gl.uniform1f(U(p, 'u_depth'), it.depth || 0); gl.uniform1f(U(p, 'u_pillDepth'), it.pillDepth || 0); gl.uniform1f(U(p, 'u_chroma'), it.chroma || 0);
+  const tn = it.tint || [0, 0, 0, 0]; gl.uniform4f(U(p, 'u_tint'), tn[0], tn[1], tn[2], tn[3]); gl.uniform1f(U(p, 'u_opacity'), it.op ?? 1);
+  gl.uniform1f(U(p, 'u_hlAlpha'), it.hl ?? 1); gl.uniform1f(U(p, 'u_hlInner'), hlInner); const sh = it.shadow || [0, 0, 0]; gl.uniform3f(U(p, 'u_shadow'), sh[0], sh[1], sh[2]);
+  { const c = it.clip; gl.uniform4f(U(p, 'u_clip'), c ? c[0] : 0, c ? c[1] : 0, c ? c[2] : 0, c ? c[3] : 0); }
+  gl.uniform1f(U(p, 'u_zoom'), it.zoom || 1); gl.uniform1f(U(p, 'u_edge'), it.edge || 0); gl.uniform1f(U(p, 'u_flat'), it.flat ? 1 : 0); gl.uniform1f(U(p, 'u_useTab'), it.useTab ? 1 : 0);
+  if (it.useTab){ const f = it.fill; gl.uniform4f(U(p, 'u_fill'), f[0], f[1], f[2], f[3]); gl.uniform4f(U(p, 'u_tabRect'), EX.tabs.x, EX.tabs.y, EX.tabs.w, EX.tabs.h); }
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+function glassUniformsBase(tx, flip, tabTex){
+  const p = progGlass; gl.useProgram(p); gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tx); gl.uniform1i(U(p, 'u_tex'), 0);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, tabTex || glyphTex); gl.uniform1i(U(p, 'u_tab'), 1); gl.activeTexture(gl.TEXTURE0);
+  gl.uniform2f(U(p, 'u_view'), W, H); gl.uniform1f(U(p, 'u_texFlip'), flip); gl.uniform3f(U(p, 'u_touch'), SPR.touch.x, SPR.touch.y, P.glowOn ? SPR.touch.s * P.touchGlow : 0); gl.uniform1f(U(p, 'u_gn'), P.glowNoise ? P.glowNoiseAmt : 0);
+}
+function render(){
+  const cw = glc.width, ch = glc.height, col = colors(), t = S.t;
+  if (sceneDirty){
+    if (HIC){ if (!hicOK) return; }       // waits for the first 'paint' snapshot
+    else { drawContent(); gl.bindTexture(gl.TEXTURE_2D, sceneTex); gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, cv); }
+    sceneDirty = false; blurDirty = true;
+  }
+  if (glyphDirty) drawGlyphs();
+  const frost = P.frost;
+  if (P.glass){
+    ensureLow();
+    if (blurDirty){
+      const tex1 = [1 / cw, 1 / ch], sig = (frost ? FROST_BLUR : P.blur) * (bw / W);
+      composePass(cw, ch, col);
+      gl.enable(gl.SCISSOR_TEST);
+      for (const st of lowStrips(sig)){ const sc = r => gl.scissor(0, r[0], bw, r[1]); sc(st.rowsM);
+        pass(progDown, fbA, bw, bh, finalTex, () => { const dk = Math.max(0, (cw / bw - 1) / 2);   // box spacing follows the downscale ratio: 1:1 (res 1.0) = a single tap, no hidden blur
+          gl.uniform2f(U(progDown, 'u_texel'), tex1[0] * dk, tex1[1] * dk); gl.uniform1f(U(progDown, 'u_sat'), 1 + .5 * P.vib); });
+        pass(progBlur, fbB, bw, bh, lowA, () => { blurUniforms(1 / bw, 0, sig); });
+        sc(st.rows0);
+        pass(progBlur, fbA, bw, bh, lowB, () => { blurUniforms(0, 1 / bh, sig); }); }
+      gl.disable(gl.SCISSOR_TEST);
+      blurDirty = false;
+    }
+  } else if (blurDirty){
+    composePass(cw, ch, col);
+    blurDirty = false;
+  }
+  pass(progBlit, null, cw, ch, finalTex);
+  if (!P.glass) return;
+
+  gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+  execPlanGL(glassPlan(col, t, cw, ch));
+}
+/* What to draw above the page: ONE list of operations shared by the WebGL2 and WebGPU backends, so both always draw the same thing in the same order.
+   ops: {k:'g', tx:'final'|'low'|'comp', it} glass quad · {k:'copy', y0, y1} snapshot of the strip into the pill's backdrop (css px) · {k:'q', ...} glyph layer */
+function glassPlan(col, t, cw, ch){
+  const ops = [], frost = P.frost;
+  const tint = [...col.tint, P.tint];
+  const surf = (r, extra) => Object.assign({ x: r.x, y: r.y, w: r.w, h: r.h, tint, shadow: [24, 4, .1], hl: 1 }, !frost ? { refH: P.lensH * LENS_MAX, refA: P.lensA * LENS_MAX, depth: P.depth ? 1 : 0, pillDepth: P.pillDepth ? 1 : 0, chroma: P.chroma ? 1 : 0 } : {}, extra);
+  const amt = k => clamp((SPR[k].x - 1) / Math.max(.001, P.pressScale - 1), 0, 1);      // press amount drives the rim 'shimmer'
+  const items = [surf(L.back, { edge: 1, hl: 1 + amt('back') }), surf(L.tabs), surf(L.search, { hl: 1 + amt('srch') }), surf(L.acc)];
+  { const mk = clamp(L.menuM, 0, 1);      // ONE glass surface for capsule and menu: no swap, so the spring can overshoot below the capsule size on close
+    items.push(surf(L.menu, { rad: L.menuRad, edge: 1, hl: 1 + amt('act'), shadow: [24 + 8 * mk, 4 + 4 * mk, .1 + .06 * mk], margin: 80 })); }
+  if (S.nav.length && GT.length){            // thumbs first, so top bar / tab bar / menu glass always sit above them
+    for (const g of GT){ const st = GS[g.id]; if (!st) continue; const cym = (g.kind === 'sw' ? g.ty + 14 : g.cy) - S.scrollY; if (cym < -40 || cym > H + 40) continue;
+      const pr = clamp(st.p, 0, 1.2), pc = clamp(pr, 0, 1), tg = g.kind === 'sw' ? thumbGeo(g.tx + swCx(st.x), cym, pr) : sliderGeo(g.frac, cym, pr, g.x0, g.w), h = tg.h, zr = thumbRamp(cym); if (pc < .01 || zr <= 0) continue;
+      ops.push({ k: 'g', tx: 'final', it: surf({ x: tg.x, y: tg.y, w: tg.w, h: tg.h }, { tint: [1, 1, 1, lerp(.95, .1, pc)], ...(frost ? {} : { refH: Math.min(h / 2 - 1, 11), refA: 16 * (P.lensA / .5) * pc, chroma: pc > .3 ? 1 : 0, depth: 0 }), shadow: [8, 2, .2 + .1 * pc], margin: 24, hl: 1, op: zr }) }); }
+  }
+  for (const it of items) ops.push({ k: 'g', tx: 'low', it });
+
+  // selection pill: flat fill under the tabs, or the glass lens on top of them
+  const pillOn = S.tab < NT, pe = clamp(1 - t * 3, 0, 1), base = S.dark ? .14 : .5;
+  const tw = tabW(), rh = rowH(), liftH = rh + 2 * PILL_INSET + PILL_GROW, liftW = liftH * tw / rh;
+  const lw = (tw + (liftW - tw) * pill.liftX) * (1 + pill.deviation), lh = (rh + (liftH - rh) * pill.liftY) * (1 - pill.deviation);
+  const pcx = EX.tabs.x + PILL_INSET + pill.position * tw + tw / 2, pcy = EX.tabs.y + PILL_INSET + rh / 2;
+  // While folding, the strip (L.tabs) shrinks but the pill is laid out in the expanded strip (EX.tabs). The pill keeps its shape and is MASKED by the live strip
+  // (rounded rect, same as the glyph layer), instead of being squeezed into it.
+  const pr = R(pcx - lw / 2, pcy - lh / 2, lw, lh), pclip = t > .001 ? [L.tabs.x, L.tabs.y, L.tabs.w, L.tabs.h] : null;
+  const glassPill = !frost && P.glass && !pill.isFlat;
+  if (pillOn && pe > 0 && !glassPill) ops.push({ k: 'g', tx: 'low', it: { ...pr, clip: pclip, flat: 1, tint: [1, 1, 1, base], op: pe, margin: 2 } });
+  // backdrop snapshot for the lens = page + bar glass (+ flat fill is absent while the lens is up); taken BEFORE the tab row is drawn,
+  // because the shader composites fill + tab row itself, per refracted tap
+  if (pillOn && pe > 0 && glassPill){ const m = 64; ops.push({ k: 'copy', y0: Math.min(EX.tabs.y, L.tabs.y) - m - PILL_GROW, y1: Math.max(EX.tabs.y + EX.tabs.h, L.tabs.y + L.tabs.h) + m + PILL_GROW }); }
+  // glyph layer (the tab row), clipped to the morphing group
+  if (pe > 0) ops.push({ k: 'q', rect: [EX.tabs.x, EX.tabs.y, EX.tabs.w, EX.tabs.h], clip: [L.tabs.x, L.tabs.y, L.tabs.w, L.tabs.h], clipR: Math.min(L.tabs.w, L.tabs.h) / 2, alpha: pe, blurPx: P.iconBlur ? (1 - pe) * P.iconBlurPx : 0 });
+  if (pillOn && pe > 0 && glassPill){
+    const m = pill.material, rim = m * clamp((pill.glassPresence - .45) / .55, 0, 1);
+    ops.push({ k: 'g', tx: 'comp', it: { ...pr, clip: pclip, margin: 32, refH: 12 * pill.glassPresence, refA: 14 * m, chroma: 1, depth: 0, useTab: 1, tint: [0, 0, 0, 0],
+      fill: [1, 1, 1, base], hl: rim, shadow: [12, 2, .3 * rim], op: pe, zoom: 1 + (P.lensZoom - 1) * m } });   // fill tetap: kalau ikut memudar, pill hilang di latar gelap
+  }
+  return { ops, touch: [SPR.touch.x, SPR.touch.y, P.glowOn ? SPR.touch.s * P.touchGlow : 0], gn: P.glowNoise ? P.glowNoiseAmt : 0 };
+}
+function execPlanGL(plan){
+  const cw = glc.width, ch = glc.height; let cur = '';
+  for (const op of plan.ops){
+    if (op.k === 'g'){ if (op.tx !== cur){ cur = op.tx; if (op.tx === 'comp') glassUniformsBase(compTex, 1, glyphTex); else glassUniformsBase(op.tx === 'low' ? lowA : finalTex, 0); } drawGlassItem(op.it); }
+    else if (op.k === 'copy'){ gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.bindTexture(gl.TEXTURE_2D, compTex);
+      const r0 = clamp(Math.floor((H - op.y1) * ch / H), 0, ch), r1 = clamp(Math.ceil((H - op.y0) * ch / H), 0, ch); gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, r0, 0, r0, cw, Math.max(1, r1 - r0)); }
+    else { cur = ''; const q = progQuad; gl.useProgram(q); gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, glyphTex); gl.uniform1i(U(q, 'u_tab'), 0);
+      gl.uniform2f(U(q, 'u_view'), W, H); gl.uniform4f(U(q, 'u_rect'), op.rect[0], op.rect[1], op.rect[2], op.rect[3]); gl.uniform1f(U(q, 'u_margin'), 0);
+      gl.uniform4f(U(q, 'u_clip'), op.clip[0], op.clip[1], op.clip[2], op.clip[3]); gl.uniform1f(U(q, 'u_clipR'), op.clipR); gl.uniform1f(U(q, 'u_alpha'), op.alpha); gl.uniform1f(U(q, 'u_blurPx'), op.blurPx);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); }
+  }
+}
+
+function diagText(){ try { if (GPU) return ` · DPR ${DPR} · tex ${GPU.dev.limits.maxTextureDimension2D} · ${glc.width}×${glc.height}${GPU.adapter ? ' · ' + GPU.adapter : ''}`; return ` · DPR ${DPR} · tex ${gl.getParameter(gl.MAX_TEXTURE_SIZE)} · ${glc.width}×${glc.height}`; } catch (e) { return ''; } }
+function enterFallback(reason){
+  if (!GL_OK) return; console.error('GL fallback:', reason); GL_OK = false; HIC = null;
+  const f = document.createElement('canvas'); f.id = 'fallbackCv'; phone.insertBefore(f, glc); glc.style.display = 'none'; initFallbackUI();
+  $('#src').textContent = 'Tanpa WebGL2 (otomatis, ' + reason + ')'; resize();
+}
+let checkFrames = 0;
+function selfCheck(){          // canvas path only: the page band of the 2D canvas must also show up in the GL output
+  if (HIC || !GL_OK) return; checkFrames++;
+  if (checkFrames === 1){ const e = gl.getError(); if (e) return enterFallback('GL error 0x' + e.toString(16)); }
+  if (checkFrames !== 4 && checkFrames !== 24) return;
+  try {
+    const w = glc.width, h = glc.height, y0 = Math.round(h * .3), bh = Math.round(h * .3), a = cx.getImageData(0, y0, w, bh).data, px = new Uint8Array(w * bh * 4);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.readPixels(0, h - y0 - bh, w, bh, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    const spread = d => { let mn = 1e9, mx = -1; for (let i = 0; i < d.length; i += 16){ const v = d[i] + d[i + 1] + d[i + 2]; if (v < mn) mn = v; if (v > mx) mx = v; } return mx - mn; };
+    if (spread(a) > 120 && spread(px) < 20) enterFallback('layar GL kosong padahal konten ada');
+  } catch (e) { console.warn('selfCheck:', e); }
+}
+/* ============ WebGPU backend ============
+   Port 1:1 of the WebGL2 pipeline (same passes, same order, same maths): scene -> compose (page + top progressive blur + bottom scrim) -> downsample (box + saturation)
+   -> separable Gaussian at low res -> glass quads (SDF lens, 7-tap dispersion, rim, Gaussian shadow, touch glow) -> pill lens over a snapshot of the bar.
+   WHAT is drawn comes from glassPlan() (shared with WebGL2); only the encoding differs. Conventions: every texture is stored top row first (v=0 = top of the page),
+   so the u_texFlip trick of the GL default framebuffer is not needed (the snapshot is copied with copyTextureToTexture, still top-first).
+   Gradient noise uses gl_FragCoord-equivalent coordinates (y from the bottom on screen passes) so the grain pattern equals WebGL's.
+   Not available here: HTML-in-Canvas (WebGL2 only). Failure (no adapter, shader error, validation error, device lost) -> reload with the lgSkipGPU session flag -> WebGL2 -> Canvas 2D. */
+let GPU = null;
+const WG_COMMON = `
+@group(0) @binding(1) var smp: sampler;
+@group(0) @binding(2) var tx: texture_2d<f32>;
+@group(0) @binding(3) var tb: texture_2d<f32>;
+fn T(t: texture_2d<f32>, uv: vec2f) -> vec4f { return textureSampleLevel(t, smp, uv, 0.); }
+struct FV { @builtin(position) p: vec4f, @location(0) uv: vec2f };
+@vertex fn vs_full(@builtin(vertex_index) i: u32) -> FV {
+  var q = array<vec2f,3>(vec2f(-1,-1), vec2f(3,-1), vec2f(-1,3)); var o: FV; o.p = vec4f(q[i], 0, 1); o.uv = vec2f(q[i].x * .5 + .5, .5 - q[i].y * .5); return o; }
+fn eio(x0: f32) -> f32 { let x = clamp(x0, 0., 1.); var s = x;
+  for (var i = 0; i < 6; i++) { let q = 1. - s; let bx = 3.*q*q*s*.42 + 3.*q*s*s*.58 + s*s*s; let d = 3.*q*q*.42 + 6.*q*s*.16 + 3.*s*s*.42; s = clamp(s - (bx - x) / max(d, 1e-3), 0., 1.); }
+  let q = 1. - s; return 3.*q*s*s + s*s*s; }   // CubicBezier(.42,0,.58,1) = Compose EaseInOut
+fn sdRR(c: vec2f, hs: vec2f, r: f32) -> f32 { let cc = abs(c) - (hs - vec2f(r)); return length(max(cc, vec2f(0.))) - r + min(max(cc.x, cc.y), 0.); }
+`;
+const WG_QUAD = `
+struct GV { @builtin(position) p: vec4f, @location(0) css: vec2f };
+@vertex fn vs_quad(@builtin(vertex_index) i: u32) -> GV {
+  let a = vec2f(f32(i & 1u), f32(i >> 1u)); let p = u.rect.xy - u.margin + a * (u.rect.zw + 2. * u.margin);
+  var o: GV; o.css = p; o.p = vec4f(p.x / u.view.x * 2. - 1., 1. - p.y / u.view.y * 2., 0., 1.); return o; }
+`;
+const WG = {
+  blit: { fmt: 'canvas', u: `struct U { p: vec4f };`, fs: `@fragment fn fs(v: FV) -> @location(0) vec4f { return vec4f(T(tx, v.uv).rgb, 1.); }` },
+  down: { fmt: 'rgba', u: `struct U { texel: vec2f, sat: f32, p0: f32 };`, fs: `
+@fragment fn fs(v: FV) -> @location(0) vec4f {
+  var c = vec3f(0.);
+  for (var y = -1; y <= 1; y++) { for (var x = -1; x <= 1; x++) { c += T(tx, v.uv + vec2f(f32(x), f32(y)) * u.texel).rgb; } }
+  c /= 9.; let inv = 1. - u.sat; let r = .213 * inv; let g = .715 * inv; let b = .072 * inv;     // colorControls(saturation)
+  let m = mat3x3f(vec3f(r + u.sat, r, r), vec3f(g, g + u.sat, g), vec3f(b, b, b + u.sat));
+  return vec4f(clamp(m * c, vec3f(0.), vec3f(1.)), 1.); }` },
+  blur: { fmt: 'rgba', u: `struct U { dir: vec2f, lim: f32, stp: f32, w: array<vec4f, 7> };`, fs: `
+fn Wt(i: i32) -> f32 { return u.w[i / 4][i % 4]; }
+@fragment fn fs(v: FV) -> @location(0) vec4f {
+  var acc = T(tx, v.uv).rgb * Wt(0); var ws = Wt(0);
+  for (var i = 1; i <= 24; i++) { let fi = f32(i) * u.stp; if (fi > u.lim + .001) { break; } let w = Wt(i); acc += (T(tx, v.uv + u.dir * fi).rgb + T(tx, v.uv - u.dir * fi).rgb) * w; ws += 2. * w; }
+  return vec4f(acc / ws, 1.); }` },
+  vblur: { fmt: 'rgba', u: `struct U { dir: vec2f, view: vec2f, bg: vec4f, topH: f32, sig: f32, p0: f32, p1: f32 };`, fs: `
+fn sp(uv: vec2f) -> vec3f { if (uv.y < 0.) { return u.bg.xyz; } return T(tx, uv).rgb; }
+@fragment fn fs(v: FV) -> @location(0) vec4f {
+  let I = 1. - eio(v.uv.y * u.view.y / u.topH); let sg = u.sig * I;
+  if (sg < .05) { return vec4f(T(tx, v.uv).rgb, 1.); }
+  let lim = 3.2 * sg; let stp = max(1., lim / 36.); var acc = sp(v.uv); var ws = 1.;
+  for (var i = 1; i <= 36; i++) { let fi = f32(i) * stp; if (fi > lim + .001) { break; } let w = exp(-fi * fi / (2. * sg * sg)); let d = u.dir * fi; acc += (sp(v.uv + d) + sp(v.uv - d)) * w; ws += 2. * w; }
+  return vec4f(acc / ws, 1.); }` },
+  compose: { fmt: 'rgba', u: `struct U { view: vec2f, scrimH: f32, topH: f32, bg: vec4f, topOn: f32, p0: f32, p1: f32, p2: f32 };`, fs: `
+@fragment fn fs(v: FV) -> @location(0) vec4f {
+  var c = T(tx, v.uv).rgb; let y = v.uv.y * u.view.y; let tt = y / u.topH;
+  if (u.topOn > .5 && tt < 1.) { var foot = 1.; if (tt > .6) { foot = 1. - eio((tt - .6) / .4); } var bl = T(tb, v.uv).rgb;
+    bl += (fract(sin(dot(v.p.xy, vec2f(12.9898, 78.233))) * 43758.5453) - .5) / 255.; c = mix(c, bl, foot); }   // +-0.5/255 dither (texture-oriented target: frag y is the row, as in GL)
+  var st = (y - (u.view.y - u.scrimH)) / u.scrimH; if (st > 0.) { st = clamp(st, 0., 1.); c = mix(c, u.bg.xyz, st*st*st); }
+  return vec4f(c, 1.); }` },
+  quad: { fmt: 'canvas', blend: 1, vs: 'vs_quad', u: `struct U { view: vec2f, margin: f32, clipR: f32, rect: vec4f, clip: vec4f, alpha: f32, blurPx: f32, p0: f32, p1: f32 };`, fs: `
+@fragment fn fs(v: GV) -> @location(0) vec4f {
+  let hs = .5 * u.clip.zw; let sd = sdRR(v.css - u.clip.xy - hs, hs, u.clipR); let fw = fwidth(sd); let m = clamp(.5 - sd / max(fw, 1e-4), 0., 1.);
+  let tu = (v.css - u.rect.xy) / u.rect.zw; var t = T(tx, tu);
+  if (u.blurPx > .05) { let r = u.blurPx / u.rect.zw; var a = t;
+    for (var i = 0; i < 8; i++) { let an = f32(i) * .785398; let d = vec2f(cos(an), sin(an)) * r; a += T(tx, tu + d) + T(tx, tu + d * .5); } t = a / 17.; }
+  return t * (m * u.alpha); }` },
+  glass: { fmt: 'canvas', blend: 1, vs: 'vs_quad', u: `struct U {
+  view: vec2f, texFlip: f32, zoom: f32, rect: vec4f, radius: f32, margin: f32, refH: f32, refA: f32, depth: f32, chroma: f32, pillDepth: f32, opacity: f32,
+  tint: vec4f, shadow: vec3f, edge: f32, hlAlpha: f32, hlInner: f32, isFlat: f32, useTab: f32, touch: vec3f, gn: f32,
+  clip: vec4f, fill: vec4f, tabRect: vec4f, px: vec2f, p0: f32, p1: f32 };`, fs: `
+fn gradSd(c: vec2f, hs: vec2f, r: f32) -> vec2f {
+  let cc = abs(c) - (hs - vec2f(r));
+  if (cc.x >= 0. || cc.y >= 0.) { let m = max(cc, vec2f(0.)); let l = length(m); var d = vec2f(0.); if (l > 1e-5) { d = m / l; } return sign(c) * d; }
+  let gx = step(cc.y, cc.x); return sign(c) * vec2f(gx, 1. - gx); }
+fn nrm(v: vec2f) -> vec2f { let l = length(v); if (l > 1e-5) { return v / l; } return vec2f(0.); }
+fn circleMap(x: f32) -> f32 { return 1. - sqrt(max(1. - x * x, 0.)); }
+fn gauss(x: f32, s: f32) -> f32 { return exp(-x * x / (2. * s * s)) / (2.50662827 * s); }
+fn erfa(x0: f32) -> f32 { let s = sign(x0); let a = abs(x0); var x = 1. + (.278393 + (.230389 + .078108 * (a * a)) * a) * a; x = x * x; return s - s / (x * x); }
+fn rbX(x: f32, y: f32, s: f32, corner: f32, hs: vec2f) -> f32 {
+  let delta = min(hs.y - corner - abs(y), 0.); let curved = hs.x - corner + sqrt(max(0., corner * corner - delta * delta));
+  let integral = .5 + .5 * vec2f(erfa((x - curved) * (.70710678 / s)), erfa((x + curved) * (.70710678 / s))); return integral.y - integral.x; }
+fn boxShadow(p: vec2f, hs: vec2f, s: f32, corner: f32) -> f32 {
+  let low = p.y - hs.y; let high = p.y + hs.y; let st = clamp(-3. * s, low, high); let en = clamp(3. * s, low, high);
+  let stp = (en - st) / 6.; var y = st + stp * .5; var v = 0.;
+  for (var i = 0; i < 6; i++) { v += rbX(p.x, p.y - y, s, corner, hs) * gauss(y, s) * stp; y += stp; } return v; }
+fn S(lp0: vec2f) -> vec3f {
+  let lp = .5 * u.rect.zw + (lp0 - .5 * u.rect.zw) / u.zoom;          // lens magnification about the pill centre
+  let css = u.rect.xy + lp; var uv = css / u.view; uv.y = mix(uv.y, 1. - uv.y, u.texFlip);
+  var c = T(tx, uv).rgb;
+  if (u.useTab > .5) {                                   // pill backdrop: page+bar glass, then fill, then the tab row on top
+    c = mix(c, u.fill.rgb, u.fill.a);
+    let tu = (css - u.tabRect.xy) / u.tabRect.zw;
+    if (tu.x >= 0. && tu.x <= 1. && tu.y >= 0. && tu.y <= 1.) { let t = T(tb, tu); c = c * (1. - t.a) + t.rgb; }
+  }
+  return c; }
+@fragment fn fs(v: GV) -> @location(0) vec4f {
+  let hs = .5 * u.rect.zw; let local = v.css - u.rect.xy; let cc = local - hs;
+  let sd = sdRR(cc, hs, u.radius); let px = max(fwidth(sd), 1e-4); let cover = clamp(.5 - sd / px, 0., 1.);
+  let hsc = .5 * u.clip.zw; let csd = sdRR(v.css - u.clip.xy - hsc, hsc, min(hsc.x, hsc.y)); let cfw = fwidth(csd);
+  var cm = 1.; if (u.clip.w > 0.) { cm = clamp(.5 - csd / max(cfw, 1e-4), 0., 1.); }
+  let fc = vec2f(v.p.x, u.px.y - v.p.y);                  // gl_FragCoord (origin bottom-left) on the screen target
+  if (u.isFlat > .5) { let a = u.tint.a * cover * u.opacity * cm; return vec4f(u.tint.rgb * a, a); }
+  var sh = 0.;
+  if (u.shadow.z > 0.) { let sg = .57735 * u.shadow.x + .5; let q = cc - vec2f(0., u.shadow.y);
+    if (sdRR(q, hs, u.radius) < 4.5 * sg) { sh = u.shadow.z * boxShadow(q, hs, sg, min(u.radius, min(hs.x, hs.y))); } }
+  var rgb = vec3f(0.);
+  if (cover > 0.) {
+    var col = vec3f(0.);
+    if (u.refH > 0. && u.refA > 0. && -sd < u.refH) {
+      let sdn = min(sd, 0.);
+      let d = circleMap(1. - (-sdn) / u.refH) * (-u.refA);
+      let gr = min(u.radius * 1.5, min(hs.x, hs.y));
+      var radial = nrm(cc);
+      if (u.pillDepth > .5) { let rr = min(u.radius, min(hs.x, hs.y)); radial = nrm(cc - clamp(cc, -(hs - vec2f(rr)), hs - vec2f(rr))); }
+      let grad = nrm(gradSd(cc, hs, gr) + u.depth * radial);
+      let rc = local + d * grad;
+      if (u.chroma > .5) {
+        var di = u.chroma * ((cc.x * cc.y) / (hs.x * hs.y)); if (u.pillDepth > .5) { di = u.chroma * .5; }
+        let dc = d * grad * di;
+        let red = S(rc + dc); let orange = S(rc + dc * (2. / 3.)); let yellow = S(rc + dc * (1. / 3.)); let green = S(rc); let cyan = S(rc - dc * (1. / 3.)); let blue = S(rc - dc * (2. / 3.)); let purple = S(rc - dc);
+        col = vec3f(red.r / 3.5 + orange.r / 3.5 + yellow.r / 3.5 + purple.r / 7.,
+                    orange.g / 7. + yellow.g / 3.5 + green.g / 3.5 + cyan.g / 3.5,
+                    cyan.b / 3. + blue.b / 3. + purple.b / 3.);
+      } else { col = S(rc); }
+    } else { col = S(local); }
+    col = mix(col, u.tint.rgb, u.tint.a);
+    { let td = length(v.css - u.touch.xy); let g = u.touch.z * .28 * exp(-td * td / (2. * 72. * 72.)); let nz = fract(sin(dot(fc, vec2f(12.9898, 78.233))) * 43758.5453); col += vec3f(g * (1. + u.gn * (nz * 2. - 1.))); }
+    let inner = -sd; let gr2 = min(u.radius * 1.5, min(hs.x, hs.y));
+    let band = 1. - smoothstep(u.hlInner - .3, u.hlInner + .3, inner);
+    let inten = abs(dot(gradSd(cc, hs, gr2), vec2f(.70710678)));  // Highlight.Default: angle 45deg
+    col += vec3f(.5 * inten * band * u.hlAlpha);
+    col = mix(col, vec3f(1.), u.edge * .10 * (1. - smoothstep(.5 - .3, .5 + .3, inner)));
+    rgb = col;
+  }
+  let a = cover * u.opacity; let shA = sh * (1. - cover) * u.opacity;
+  return vec4f(rgb * a, a + shA) * cm; }` },
+};
+if (DEBUG) window.__WG = { WG, WG_COMMON, WG_QUAD };
+function skipGPU(reason){ console.warn('WebGPU dilewati:', reason); if (DEBUG && /[?&]noreload\b/.test(location.search)) return; try { sessionStorage.setItem('lgSkipGPU', '1'); } catch (e) {} location.reload(); }
+function setRenderer(i){ ST.renderer = RENDERERS[i] || 'auto'; try { sessionStorage.removeItem('lgSkipGPU'); } catch (e) {} persist(); location.reload(); }
+const ARENA_SLOTS = 1024, SLOT_F = 64;       // 256-byte slots (minUniformBufferOffsetAlignment), one per draw/pass, rewritten each frame
+async function initWebGPU(){
+  if (!navigator.gpu) throw new Error('navigator.gpu tidak ada');
+  const ad = await navigator.gpu.requestAdapter(); if (!ad) throw new Error('adapter WebGPU tidak ada');
+  const OFFSCREEN = DEBUG && /[?&]offscreen\b/.test(location.search);      // tests: render into a texture and read it back (headless Chrome loses the device when it presents a WebGPU canvas)
+  const dev = await ad.requestDevice(), ctx = OFFSCREEN ? null : glc.getContext('webgpu'); if (!OFFSCREEN && !ctx) throw new Error('konteks webgpu gagal');
+  const canvasFmt = navigator.gpu.getPreferredCanvasFormat(); if (ctx) ctx.configure({ device: dev, format: canvasFmt, alphaMode: 'opaque', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });
+  const bgl = dev.createBindGroupLayout({ entries: [
+    { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform', hasDynamicOffset: true, minBindingSize: 0 } },
+    { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+    { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+    { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } }] });
+  const layout = dev.createPipelineLayout({ bindGroupLayouts: [bgl] }), pipes = {};
+  const blend = { color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' }, alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' } };
+  const errs = [];
+  for (const [name, d] of Object.entries(WG)){
+    const code = d.u + '\n@group(0) @binding(0) var<uniform> u: U;\n' + WG_COMMON + (d.vs ? WG_QUAD : '') + d.fs, mod = dev.createShaderModule({ code, label: name });
+    const info = await mod.getCompilationInfo(); for (const m of info.messages) if (m.type === 'error') errs.push(name + ':' + m.lineNum + ' ' + m.message);
+    if (errs.length) continue;
+    pipes[name] = dev.createRenderPipeline({ layout, label: name, vertex: { module: mod, entryPoint: d.vs || 'vs_full' }, fragment: { module: mod, entryPoint: 'fs', targets: [{ format: d.fmt === 'canvas' ? canvasFmt : 'rgba8unorm', ...(d.blend ? { blend } : {}) }] },
+      primitive: { topology: d.vs ? 'triangle-strip' : 'triangle-list' } });
+  }
+  if (errs.length) throw new Error('WGSL: ' + errs.slice(0, 3).join(' | '));
+  dev.lost.then(i => skipGPU('device hilang: ' + i.message));
+  let nerr = 0; dev.addEventListener('uncapturederror', e => { console.error('WebGPU error:', e.error.message); if (++nerr === 1) skipGPU('validation: ' + e.error.message); });
+  const arena = dev.createBuffer({ size: ARENA_SLOTS * SLOT_F * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  const dummy = dev.createTexture({ size: [1, 1], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING });
+  GPU = { ad, dev, ctx, OFFSCREEN, canvasFmt, bgl, pipes, arena, arenaF: new Float32Array(ARENA_SLOTS * SLOT_F), slot: 0, smp: dev.createSampler({ magFilter: 'linear', minFilter: 'linear', addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge' }),
+    dummy, dummyV: dummy.createView(), bgs: new Map(), tex: {}, adapter: ad.info ? `${ad.info.vendor || ''} ${ad.info.architecture || ''}`.trim() : '' };
+  let uid = 0; GPU.mk = (w, h, fmt, usage) => { const t = dev.createTexture({ size: [w, h], format: fmt, usage }); t._id = ++uid; t._v = t.createView(); return t; };
+  dummy._id = 0; dummy._v = GPU.dummyV;
+  resize(); $('#src').textContent = 'WebGPU (WGSL, port 1:1 dari WebGL2; tanpa HTML-in-Canvas)' + diagText(); sceneDirty = true; blurDirty = true; startLoop();
+}
+const TU = () => GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST;
+function allocGPU(){
+  const G = GPU, cw = glc.width, ch = glc.height; for (const k in G.tex) G.tex[k] && G.tex[k] !== G.tex.glyph && G.tex[k].destroy(); G.bgs.clear();
+  const old = G.tex.glyph; G.tex = { glyph: old };
+  G.tex.scene = G.mk(cw, ch, 'rgba8unorm', TU()); G.tex.final = G.mk(cw, ch, 'rgba8unorm', TU());
+  G.tex.comp = G.mk(cw, ch, G.canvasFmt, GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST);
+  if (G.OFFSCREEN){ G.off && G.off.destroy(); G.off = G.mk(cw, ch, G.canvasFmt, GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC); }
+  lowScale = 0; ensureLowGPU();
+}
+function ensureLowGPU(){
+  const G = GPU, ls = lowSize(); if (ls.sc === lowScale && G.tex.lowA) return; lowScale = ls.sc; bw = ls.w; bh = ls.h;
+  for (const k of ['lowA', 'lowB', 'lowC', 'lowD']){ G.tex[k] && G.tex[k].destroy(); G.tex[k] = G.mk(bw, bh, 'rgba8unorm', TU()); } G.bgs.clear(); blurDirty = true;
+}
+function uploadGlyphsGPU(gw, gh){
+  const G = GPU; if (!G.tex.glyph || G.tex.glyph.width !== gw || G.tex.glyph.height !== gh){ G.tex.glyph && G.tex.glyph.destroy(); G.tex.glyph = G.mk(gw, gh, 'rgba8unorm', TU()); G.bgs.clear(); }
+  G.dev.queue.copyExternalImageToTexture({ source: gcv }, { texture: G.tex.glyph, premultipliedAlpha: true }, [gw, gh]);
+}
+const gbg = (a, b) => { const G = GPU, k = a._id + '/' + b._id; let g = G.bgs.get(k); if (!g){ g = G.dev.createBindGroup({ layout: G.bgl, entries: [{ binding: 0, resource: { buffer: G.arena, offset: 0, size: SLOT_F * 4 } }, { binding: 1, resource: G.smp }, { binding: 2, resource: a._v }, { binding: 3, resource: b._v }] }); G.bgs.set(k, g); } return g; };
+const slotAlloc = () => { const G = GPU; if (G.slot >= ARENA_SLOTS) return -1; const o = G.slot++ * SLOT_F; G.arenaF.fill(0, o, o + SLOT_F); return o; };
+function fsPass(enc, name, target, a, b, vals, rows){      // one fullscreen pass; rows = [first row, row count] scissor in texture rows from the top (null: whole target, cleared)
+  const G = GPU; if (rows && rows[1] <= 0) return; const o = slotAlloc(); if (o < 0) return; G.arenaF.set(vals, o);
+  const pass = enc.beginRenderPass({ colorAttachments: [{ view: target._v, loadOp: rows ? 'load' : 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }] });
+  pass.setPipeline(G.pipes[name]); pass.setBindGroup(0, gbg(a, b), [o * 4]); if (rows) pass.setScissorRect(0, rows[0], target.width, rows[1]); pass.draw(3); pass.end();
+}
+function composePassGPU(enc, cw, ch, col){
+  const G = GPU, T_ = G.tex, on = topBlurOn(), topH = TOP_STRIP_H();
+  if (on){
+    ensureLowGPU();
+    const sig = 24 * (bw / W), dk = Math.max(0, (cw / bw - 1) / 2), reach = 3 * 24 + 4, rows = m => [0, clamp(Math.ceil((topH + m) / H * bh), 1, bh)];
+    fsPass(enc, 'down', T_.lowC, T_.scene, G.dummy, [dk / cw, dk / ch, 1, 0], rows(reach));
+    const vb = dx => [dx ? 1 / bw : 0, dx ? 0 : 1 / bh, W, H, col.bg[0], col.bg[1], col.bg[2], 0, topH, sig];
+    fsPass(enc, 'vblur', T_.lowD, T_.lowC, G.dummy, vb(true), rows(reach));
+    fsPass(enc, 'vblur', T_.lowC, T_.lowD, G.dummy, vb(false), rows(0));
+  }
+  fsPass(enc, 'compose', T_.final, T_.scene, on ? T_.lowC : G.dummy, [W, H, FLOOR + 254, topH, col.bg[0], col.bg[1], col.bg[2], 0, on ? 1 : 0], null);
+}
+function glassVals(o, it, tx, plan){
+  const F = GPU.arenaF, ct = it.clip, tn = it.tint || [0, 0, 0, 0], sh = it.shadow || [0, 0, 0], f = it.fill || [0, 0, 0, 0], tr = EX.tabs;
+  F.set([W, H, 0, it.zoom || 1,  it.x, it.y, it.w, it.h,  it.rad ?? Math.min(it.w, it.h) / 2, it.margin ?? 58, it.refH || 0, it.refA || 0,  it.depth || 0, it.chroma || 0, it.pillDepth || 0, it.op ?? 1,
+    tn[0], tn[1], tn[2], tn[3],  sh[0], sh[1], sh[2], it.edge || 0,  it.hl ?? 1, hlInner, it.flat ? 1 : 0, it.useTab ? 1 : 0,  plan.touch[0], plan.touch[1], plan.touch[2], plan.gn,
+    ct ? ct[0] : 0, ct ? ct[1] : 0, ct ? ct[2] : 0, ct ? ct[3] : 0,  f[0], f[1], f[2], f[3],  tr.x, tr.y, tr.w, tr.h,  glc.width, glc.height], o);
+}
+function renderGPU(){
+  const G = GPU; if (!G.tex.scene) return; const { dev, ctx } = G, T_ = G.tex, cw = glc.width, ch = glc.height, col = colors(), t = S.t;
+  if (sceneDirty){ drawContent(); dev.queue.copyExternalImageToTexture({ source: cv }, { texture: T_.scene }, [cw, ch]); sceneDirty = false; blurDirty = true; }
+  if (glyphDirty) drawGlyphs();
+  G.slot = 0; const enc = dev.createCommandEncoder(), frost = P.frost;
+  if (P.glass){
+    ensureLowGPU();
+    if (blurDirty){
+      const sig = (frost ? FROST_BLUR : P.blur) * (bw / W);
+      composePassGPU(enc, cw, ch, col);
+      for (const s of lowStrips(sig)){
+        const dk = Math.max(0, (cw / bw - 1) / 2); fsPass(enc, 'down', T_.lowA, T_.final, G.dummy, [dk / cw, dk / ch, 1 + .5 * P.vib, 0], s.rowsM);
+        blurWeights(sig); const bv = (dx, dy) => [dx, dy, blurPrm.lim, blurPrm.stp, ...blurW, 0, 0, 0];
+        fsPass(enc, 'blur', T_.lowB, T_.lowA, G.dummy, bv(1 / bw, 0), s.rowsM);
+        fsPass(enc, 'blur', T_.lowA, T_.lowB, G.dummy, bv(0, 1 / bh), s.rows0);
+      }
+      blurDirty = false;
+    }
+  } else if (blurDirty){ composePassGPU(enc, cw, ch, col); blurDirty = false; }
+  const view = G.OFFSCREEN ? G.off : ctx.getCurrentTexture(); const cview = view.createView();
+  let o = slotAlloc(); const mkPass = load => enc.beginRenderPass({ colorAttachments: [{ view: cview, loadOp: load ? 'load' : 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }] });
+  let pass = mkPass(false); pass.setPipeline(G.pipes.blit); pass.setBindGroup(0, gbg(T_.final, G.dummy), [o * 4]); pass.draw(3);
+  if (P.glass){
+    const plan = glassPlan(col, t, cw, ch), TX = { final: T_.final, low: T_.lowA, comp: T_.comp }; let cur = null;
+    for (const op of plan.ops){
+      if (op.k === 'g'){ o = slotAlloc(); if (o < 0) continue; glassVals(o, op.it, op.tx, plan); if (cur !== 'glass'){ pass.setPipeline(G.pipes.glass); cur = 'glass'; }
+        pass.setBindGroup(0, gbg(TX[op.tx], T_.glyph), [o * 4]); pass.draw(4); }
+      else if (op.k === 'copy'){ pass.end();
+        const y0 = clamp(Math.floor(op.y0 * ch / H), 0, ch), y1 = clamp(Math.ceil(op.y1 * ch / H), 0, ch);
+        enc.copyTextureToTexture({ texture: view, origin: [0, y0] }, { texture: T_.comp, origin: [0, y0] }, [cw, Math.max(1, y1 - y0)]);
+        pass = mkPass(true); cur = null; }
+      else { o = slotAlloc(); if (o < 0) continue; GPU.arenaF.set([W, H, 0, op.clipR, ...op.rect, ...op.clip, op.alpha, op.blurPx], o); pass.setPipeline(G.pipes.quad); cur = 'quad'; pass.setBindGroup(0, gbg(T_.glyph, G.dummy), [o * 4]); pass.draw(4); }
+    }
+  }
+  pass.end(); dev.queue.writeBuffer(G.arena, 0, G.arenaF.buffer, 0, G.slot * SLOT_F * 4); dev.queue.submit([enc.finish()]);
+}
+function renderFallback(){ drawContent(); const f = $('#fallbackCv').getContext('2d'); f.setTransform(1, 0, 0, 1, 0, 0); f.drawImage(cv, 0, 0); }
+
+/* ============ input ============ */
+let vel = 0, drag = null, acc = 0;
+const SLIDER_HOLD_MS = 220, HOLD_SLOP_PX = 6;            // tekan-tahan dulu baru slider pegang gesture; gerak sebelumnya = scroll
+function onScrollDelta(d){                       // FloatingTabBarScrollConnection.onPreScroll (d = content scroll delta; available.y = -d)
+  const av = -d; if ((acc > 0 && av < 0) || (acc < 0 && av > 0)) acc = 0; acc += av;
+  if (acc <= -SCROLL_THRESHOLD && !S.inline){ S.inline = true; acc = 0; } else if (acc >= SCROLL_THRESHOLD && S.inline){ S.inline = false; acc = 0; }
+}
+function setScroll(v){ const n = clamp(v, 0, Math.max(0, contentH - H)), d = n - S.scrollY; if (d !== 0){ onScrollDelta(d); S.scrollY = n; sceneDirty = true; needsRender = true; startLoop(); } else if (v !== n) vel = 0; }
+hit.addEventListener('pointerdown', e => { if (S.nav.length){ const z = zoneAt(e); if (z && z.drag){ const rx = relX(e); hold = { z, px: e.clientX, py: e.clientY, rx, timer: setTimeout(() => { hold = null; drag = null; vel = 0; sdrag = z; z.press(true); z.drag(rx); }, SLIDER_HOLD_MS) }; } else if (z && z.press){ pressed = z; z.press(true); } } drag = { y: e.clientY, y0: e.clientY, x0: e.clientX, t: performance.now(), t0: performance.now(), mv: 0, v: 0 }; vel = 0; hit.setPointerCapture(e.pointerId); });
+hit.addEventListener('pointermove', e => { if (hold && !sdrag){ const adx = Math.abs(e.clientX - hold.px), ady = Math.abs(e.clientY - hold.py);
+    if (adx > HOLD_SLOP_PX || ady > HOLD_SLOP_PX){ clearTimeout(hold.timer); const z = hold.z, rx0 = hold.rx; hold = null;
+      if (adx > ady * 1.2){ drag = null; vel = 0; sdrag = z; z.press(true); z.drag(rx0); }   // gerak dominan horizontal di atas saklar/slider = langsung geser (tanpa harus tahan dulu, penting di layar sentuh)
+    } } if (sdrag){ sdrag.drag(relX(e)); return; } if (!drag) return; drag.mv = Math.max(drag.mv, Math.abs(e.clientY - drag.y0), Math.abs(e.clientX - drag.x0)); const now = performance.now(), dy = e.clientY - drag.y, dt = Math.max(1, now - drag.t) / 1000; setScroll(S.scrollY - dy); drag.v = .7 * drag.v + .3 * (-dy / dt); drag.y = e.clientY; drag.t = now; });
+const endDrag = e => { if (hold){ clearTimeout(hold.timer); hold = null; } if (sdrag){ sdrag.press(false); if (sdrag.end) sdrag.end(!!e && e.type === 'pointercancel'); sdrag = null; return; } if (pressed){ pressed.press(false); pressed = null; } if (drag){ const tap = drag.mv < 8 && performance.now() - drag.t0 < 600 && e && e.type === 'pointerup'; if (tap){ vel = 0; drag = null; onTap(e); return; } vel = clamp(drag.v, -4000, 4000); drag = null; } };
+hit.addEventListener('contextmenu', e => e.preventDefault()); hit.addEventListener('pointerup', endDrag); hit.addEventListener('pointercancel', endDrag);
+phone.addEventListener('wheel', e => { e.preventDefault(); setScroll(S.scrollY + e.deltaY); }, { passive: false });
+
+function setTab(i, fromPill){
+  if (S.nav.length){ S.nav = []; navScroll.length = 0; }
+  const prev = S.tab; S.tab = i; sceneDirty = true; needsRender = true; glyphDirty = true; buildPrims(); if (HIC) buildDOM();
+  if (i < NT){ if (prev >= NT) pill.snapTo(i); else if (!fromPill) pill.animateTo(i); }
+  [...tabsA11y.children].forEach((b, j) => b.setAttribute('aria-selected', j === i ? 'true' : 'false'));
+  S.scrollY = clamp(S.scrollY, 0, Math.max(0, contentH - H)); startLoop();
+}
+(function bindTabs(){
+  const th = $('#tabHit'); let st = null;
+  const stepPx = () => tabW();
+  th.addEventListener('pointerdown', e => {
+    if (S.inline){ st = { inline: true }; return; }
+    st = { x: e.clientX, total: 0, start: S.tab < NT ? S.tab : 0, drag: false, down: e.clientX }; th.setPointerCapture(e.pointerId);
+    if (S.tab < NT){ const r = th.getBoundingClientRect(); if (clamp(Math.floor((e.clientX - r.left - PILL_INSET) / tabW()), 0, NT - 1) === S.tab){ pill.hold(true); startLoop(); } } });
+  th.addEventListener('pointermove', e => {
+    if (!st || st.inline || S.tab >= NT) return; const dx = e.clientX - st.down;
+    if (!st.drag && Math.abs(dx) > 8){ st.drag = true; st.x = e.clientX; st.total = 0; st.start = S.tab; pill.stepPx = stepPx(); pill.startDrag(); }
+    if (st.drag){ st.total += e.clientX - st.x; st.x = e.clientX; const f = clamp(st.start + st.total / stepPx(), 0, NT - 1); pill.dragTo(f); const ap = Math.round(f); if (ap !== st.lastTick){ st.lastTick = ap; } startLoop(); }
+  });
+  const up = e => {
+    pill.hold(false); startLoop();
+    if (!st) return; const s = st; st = null;
+    if (s.inline){ S.inline = false; acc = 0; setTab(S.tab); startLoop(); return; }
+    if (s.drag){ const f = clamp(s.start + s.total / stepPx(), 0, NT - 1), n = Math.round(f); pill.stepPx = stepPx(); pill.release(n); if (n !== S.tab) setTab(n, true); else { glyphDirty = true; } startLoop(); return; }
+    const r = th.getBoundingClientRect(), i = clamp(Math.floor((e.clientX - r.left - PILL_INSET) / tabW()), 0, NT - 1);
+    pill.stepPx = stepPx(); if (S.tab >= NT) setTab(i); else if (i !== S.tab) setTab(i);
+  };
+  th.addEventListener('pointerup', up); th.addEventListener('pointercancel', () => { pill.hold(false); if (st && st.drag) pill.release(S.tab); st = null; startLoop(); });
+  $('#searchHit').addEventListener('click', () => { if (S.inline) { S.inline = false; acc = 0; } setTab(SEARCH); });
+  accEl.addEventListener('pointerdown', () => { S.accPress = true; startLoop(); }); const rel = () => { S.accPress = false; startLoop(); };
+  accEl.addEventListener('pointerup', rel); accEl.addEventListener('pointercancel', rel); accEl.addEventListener('pointerleave', rel);
+  accPlay.addEventListener('click', e => { e.stopPropagation(); S.playing = !S.playing; playIcon(); });
+  let ti = 0; accNext.addEventListener('click', e => { e.stopPropagation(); ti = (ti + 1) % ALBUMS.length; accMeta.querySelector('.t').textContent = ALBUMS[ti]; accMeta.querySelector('.a').textContent = ARTISTS[ti % ARTISTS.length]; });
+})();
+function tabSlot(i){ if (S.inline) return i === SEARCH ? IN.search : L.tabs; if (i === SEARCH) return EX.search; return R(EX.tabs.x + PILL_INSET + i * tabW(), EX.tabs.y + PILL_INSET, tabW(), rowH()); }
+[...TABS, 'Search'].forEach((name, i) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = name; b.setAttribute('role', 'tab'); b.setAttribute('aria-selected', i === S.tab ? 'true' : 'false'); b.addEventListener('click', () => setTab(i)); b.addEventListener('focus', () => { setR(tabFocus, tabSlot(i)); tabFocus.style.display = 'block'; }); b.addEventListener('blur', () => { tabFocus.style.display = 'none'; }); tabsA11y.appendChild(b); });
+
+(function bindInteractive(){
+  const touch = (e, on) => { const r = phone.getBoundingClientRect(); SPR.touch.x = e.clientX - r.left; SPR.touch.y = e.clientY - r.top; if (on !== undefined) SPR.touch.t = on ? 1 : 0; startLoop(); };
+  const bind = (el, key, hap) => {
+    el.addEventListener('pointerdown', e => { if (key){ SPR[key].t = P.pressScale; SPR[key].d = P.pressDamp; if (hap) haptic(8); } touch(e, true); });
+    el.addEventListener('pointermove', e => { if (SPR.touch.t) touch(e); });
+    const up = () => { if (key && SPR[key].t !== 1){ SPR[key].t = 1; SPR[key].d = P.relDamp; SPR[key].v -= 1.2; } SPR.touch.t = 0; startLoop(); };   // release: lower damping + a velocity kick, so it visibly overshoots
+    el.addEventListener('pointerup', up); el.addEventListener('pointercancel', up); el.addEventListener('pointerleave', up);
+  };
+  bind($('#hitBack'), 'back'); bind($('#hitShare'), 'act'); bind($('#hitMore'), 'act'); bind($('#searchHit'), 'srch'); bind(accEl); bind($('#tabHit'));
+  $('#hitBack').addEventListener('click', () => { if (S.nav.length) popPage(); });
+  let menuHold = null, heldOpen = false;
+  $('#hitMore').addEventListener('pointerdown', e => {
+    heldOpen = false;                                  // flag lama bisa tersisa bila browser tak mengirim klik (pointer-events none saat menu terbuka)
+    const sx = e.clientX, sy = e.clientY;
+    const drop = () => { document.removeEventListener('pointermove', moveH); document.removeEventListener('pointerup', upH); document.removeEventListener('pointercancel', cancelH); };
+    const moveH = ev => {
+      if (!menuHold) return;
+      if (!menuHold.held){
+        if (Math.abs(ev.clientX - sx) > 6 || Math.abs(ev.clientY - sy) > 6){ clearTimeout(menuHold.timer); menuHold = null; drop(); }
+        return;
+      }
+      let m = null;
+      for (const mi of document.querySelectorAll('#menu .mi')){ const r = mi.getBoundingClientRect(); if (ev.clientX >= r.left && ev.clientX <= r.right && ev.clientY >= r.top && ev.clientY <= r.bottom){ m = mi; break; } }
+      if (menuHold.mi !== m){ if (menuHold.mi) menuHold.mi.classList.remove('hov'); menuHold.mi = m; if (m) m.classList.add('hov'); }
+    };
+    const upH = ev => {
+      drop();
+      const h = menuHold; menuHold = null;
+      if (h) clearTimeout(h.timer);                     // timer lama jangan bocor ke gesture berikutnya
+      if (!h || !h.held) return;                        // lepas sebelum 350ms: klik biasa yang menanganinya
+      if (h.mi){ h.mi.classList.remove('hov'); h.mi.click(); return; }
+      const mr = document.getElementById('menu').getBoundingClientRect();
+      const inside = ev.clientX >= mr.left && ev.clientX <= mr.right && ev.clientY >= mr.top && ev.clientY <= mr.bottom;
+      if (!inside){ S.menuOpen = false; startLoop(); }   // di dalam menu: biarkan terbuka
+    };
+    const cancelH = () => {                             // pointercancel (gestur sistem): bersih tanpa memilih item
+      drop();
+      const h = menuHold; menuHold = null;
+      if (h){ clearTimeout(h.timer); if (h.mi) h.mi.classList.remove('hov'); if (h.held){ S.menuOpen = false; startLoop(); } }
+    };
+    const hold = { held: false, mi: null, timer: 0 };
+    hold.timer = setTimeout(() => { if (menuHold !== hold) return; hold.held = true; heldOpen = true; haptic(10); S.menuOpen = true; startLoop(); }, MENU_HOLD_MS);
+    menuHold = hold;
+    document.addEventListener('pointermove', moveH);
+    document.addEventListener('pointerup', upH);
+    document.addEventListener('pointercancel', cancelH);
+  });
+  $('#hitMore').addEventListener('click', () => { if (heldOpen){ heldOpen = false; return; } setTimeout(() => { S.menuOpen = !S.menuOpen; startLoop(); }, S.menuOpen ? 0 : 80); });   // short delay so the release bounce is seen before the capsule morphs
+  $('#menuScrim').addEventListener('pointerdown', () => { S.menuOpen = false; startLoop(); });
+  document.querySelectorAll('#menu .mi').forEach(b => b.addEventListener('click', () => { S.menuOpen = false; startLoop(); }));
+  $('#miSettings').addEventListener('click', () => { S.nav = []; openPage('settings'); });
+  document.querySelectorAll('#menu [data-i]').forEach(sp => { sp.innerHTML = svg(sp.dataset.i, 22); });
+  addEventListener('keydown', e => { if (e.key === 'Escape' && S.menuOpen){ S.menuOpen = false; startLoop(); } });
+})();
+
+/* ============ loop ============ */
+let last = performance.now(), fN = 0, fT = last, looping = false;
+function startLoop(){ needsRender = true; if (!looping){ looping = true; last = performance.now(); requestAnimationFrame(tick); } }
+function tick(now){
+  const dt = Math.min(.05, (now - last) / 1000) * P.speed * (DEBUG && window.__ts || 1); last = now; let active = false;
+  if (!drag && Math.abs(vel) > 6){ setScroll(S.scrollY + vel * dt); vel *= Math.exp(-3.4 * dt); active = true; } else if (!drag) vel = 0;
+  // inline/expanded fold: one shared spring (stiffness 400, no bounce) drives the bar's x/w AND the pill's vertical travel,
+  // with OVERLAPPING windows (y [.55,1], width [0,.7]) so the rise blends into the stretch as one diagonal move instead of
+  // a stop-then-turn corner (visible in slow motion). Smoothstep maps give zero velocity at each channel's ends.
+  // The windows keep the pill off the row: it clears the inline circles before the bar widens into them — fold-check.mjs
+  // asserts no overlap for W=320..512 across the whole fold.
+  const tt = S.inline ? 1 : 0;
+  if (Math.abs(S.t - tt) > .0005 || Math.abs(S.tv) > .001){ const r = PillMotion.spring(S.t, S.tv, tt, dt, 400, 40); S.t = r[0]; S.tv = r[1]; if (Math.abs(S.t - tt) < .0005 && Math.abs(S.tv) < .001){ S.t = tt; S.tv = 0; } active = true; }
+  // accessory press: spring(MediumLow)
+  const ts = S.accPress ? 1.04 : 1; if (Math.abs(S.accScale - ts) > .0002 || Math.abs(S.accScaleV) > .001){ const r = PillMotion.spring(S.accScale, S.accScaleV, ts, dt, 400, 40); S.accScale = r[0]; S.accScaleV = r[1]; active = true; }
+  // interactive glass (press scale + bounce, touch glow) and the menu morph. NOTE: these numbers are estimates, not Apple's.
+  { for (const k of ['back', 'act', 'srch']){ const q = SPR[k], c = 2 * (q.d ?? P.pressDamp) * Math.sqrt(PRESS_K); if (Math.abs(q.x - q.t) > .0003 || Math.abs(q.v) > .001){ const r = PillMotion.spring(q.x, q.v, q.t, dt, PRESS_K, c); q.x = r[0]; q.v = r[1]; active = true; } else { q.x = q.t; q.v = 0; } } }
+  { const q = SPR.menu, tg = S.menuOpen ? 1 : 0; if (Math.abs(q.x - tg) > .0005 || Math.abs(q.v) > .001){ const r = PillMotion.spring(q.x, q.v, tg, dt, MENU_K, 2 * (tg ? P.menuDamp : Math.max(P.menuDamp, MENU_CLOSE_ZETA)) * Math.sqrt(MENU_K)); q.x = r[0]; q.v = r[1]; active = true; } else { q.x = tg; q.v = 0; } }
+  { const q = SPR.touch; const ns = q.s + (q.t - q.s) * (1 - Math.exp(-dt / (q.t > q.s ? .07 : .35))); if (Math.abs(ns - q.s) > .0004 || (q.t === 0 && q.s > .002)){ q.s = (q.t === 0 && ns < .004) ? 0 : ns; active = true; } }
+  { let moving = false;
+    for (const key in GS){ const g = GS[key], get = SWREG[key], tgt = (key.startsWith('sl:') || g.drag) ? null : (get ? (get() ? 1 : 0) : g.x); if (g.drag) moving = true;
+      if (tgt !== null && (Math.abs(g.x - tgt) > .0005 || Math.abs(g.v) > .002)){ const r = PillMotion.spring(g.x, g.v, tgt, dt, 420, 2 * .6 * Math.sqrt(420)); g.x = r[0]; g.v = r[1]; moving = true; } else if (tgt !== null){ if (g.x !== tgt){ g.x = tgt; moving = true; } g.v = 0; }
+      if (Math.abs(g.p - g.pt) > .001 || Math.abs(g.pv) > .002){ const r = PillMotion.spring(g.p, g.pv, g.pt, dt, 600, 2 * .62 * Math.sqrt(600)); g.p = r[0]; g.pv = r[1]; moving = true; } else { g.p = g.pt; g.pv = 0; } }
+    if (moving && S.nav.length){ const hb0 = performance.now(); active = true; buildPrims(); if (HIC) patchDOM(); sceneDirty = true; needsRender = true; PF.build += performance.now() - hb0; } }
+  // icon scale: GlassSpring(0.72, 320)
+  for (let i = 0; i < NT; i++){ const target = (S.tab < NT && i === S.tab) ? 1.08 : 1; if (Math.abs(iconScale[i] - target) > .0005 || Math.abs(iconScaleV[i]) > .001){ const r = PillMotion.spring(iconScale[i], iconScaleV[i], target, dt, 320, 2 * .72 * Math.sqrt(320)); iconScale[i] = r[0]; iconScaleV[i] = r[1]; glyphDirty = true; active = true; } }
+  if (!pill.isFlat || pill.travelActive || pill.dragging){ pill.stepPx = tabW(); pill.tick(dt, now / 1000); active = true; }
+  if (active || needsRender || sceneDirty){
+    const hp0 = performance.now(); applyDOM(); const hp1 = performance.now(); PF.dom += hp1 - hp0;
+    if (WANT_GPU){ if (GPU){ const hr0 = performance.now(); renderGPU(); PF.render += performance.now() - hr0; } }
+    else if (GL_OK){
+      if (HIC && sceneDirty){ pageInner.style.transform = `translateY(${-S.scrollY}px)`; if (typeof glc.requestPaint === 'function') glc.requestPaint(); }
+      gpuBegin(); const hr0 = performance.now(); render(); PF.render += performance.now() - hr0; gpuEnd(); selfCheck();
+    } else renderFallback();
+    needsRender = false; fN++;
+    if (active || sceneDirty) requestAnimationFrame(tick); else looping = false;
+  } else looping = false;
+  if (now - fT > 1000){ window.__fps = fN;
+    if (P.hud){ const h = $('#hud'), n = Math.max(1, fN), pg = S.nav.length ? pageTitle() : TITLES[S.tab] || '';
+      h.textContent = `fps ${fN}  page ${pg}\ncpu/frame  dom ${(PF.dom / n).toFixed(1)}  build ${(PF.build / n).toFixed(1)}  render ${(PF.render / n).toFixed(1)} ms\ngpu/frame  ${WANT_GPU ? 'n/a (WebGPU)' : TQ && PF.gn ? (PF.gpu / PF.gn).toFixed(1) + ' ms' : (TQ === false ? 'n/a (no timer query)' : '…')}\n${HIC ? 'HIC' : GPU ? 'WebGPU' : GL_OK ? 'canvas' : 'no-GL'}  ${glc.width}x${glc.height}  DOM nodes ${pageInner.querySelectorAll('*').length}`; }
+    PF.dom = PF.build = PF.render = PF.gpu = PF.gn = 0; fN = 0; fT = now; }
+  { const hs = P.hud ? 'block' : 'none'; const h = $('#hud'); if (h.style.display !== hs) h.style.display = hs; }
+}
+
+/* ============ layout / resize ============ */
+let tabsFb = null;
+function initFallbackUI(){
+  phone.classList.add('nogl'); ['#topBack', '#topActions', '#acc', '#searchIcon', '#menu'].forEach(q => $(q).classList.add('fbg'));
+  tabsFb = document.createElement('div'); tabsFb.id = 'tabsFb'; tabsFb.className = 'abs fbg';
+  tabsFb.innerHTML = '<div class="ind"></div>' + TABS.map((n, i) => `<div class="fbtab">${svg(['home', 'explore', 'library'][i], 28)}<span>${n}</span></div>`).join('');
+  phone.insertBefore(tabsFb, $('#tabHit'));
+}
+function syncFallbackTabs(tabs, e){
+  if (!tabsFb) return; setR(tabsFb, tabs); const tw = tabW(), ind = tabsFb.firstChild;
+  ind.style.left = (PILL_INSET + pill.position * tw) + 'px'; ind.style.top = PILL_INSET + 'px'; ind.style.width = tw + 'px'; ind.style.height = rowH() + 'px'; ind.style.opacity = S.tab < NT ? e : 0;
+  [...tabsFb.children].slice(1).forEach((el, i) => { el.style.left = (PILL_INSET + i * tw) + 'px'; el.style.top = PILL_INSET + 'px'; el.style.width = tw + 'px'; el.style.opacity = (S.tab === i ? 1 : .65) * e; });
+}
+function resize(){
+  const narrow = innerWidth <= 520; phone.style.height = narrow ? '' : Math.max(700, Math.min(844, innerHeight - 40)) + 'px';
+  W = phone.clientWidth; H = phone.clientHeight; buildLayoutX(); buildTop(); setR($('#topBack'), topBack); setR($('#topActions'), topActions); setVertical();
+  pageEl.style.width = pageInner.style.width = W + 'px';
+  glc.width = Math.round(W * DPR); glc.height = Math.round(H * DPR); cv.width = glc.width; cv.height = glc.height; pageEl.style.height = H + 'px';
+  if (GL_OK) allocGL(); else if (WANT_GPU){ if (GPU) allocGPU(); } else { const f = $('#fallbackCv'); f.width = cv.width; f.height = cv.height; }
+  buildPrims(); if (HIC){ buildDOM(); hicOK = false; if (typeof glc.requestPaint === 'function') glc.requestPaint(); }
+  glyphDirty = true; sceneDirty = true; startLoop();
+}
+
+/* ============ control panel ============ */
+function setTheme(d){ S.dark = d; phone.classList.toggle('dark', d); phone.classList.toggle('light', !d); syncCtrls(); buildPrims(); if (HIC) buildDOM(); glyphDirty = true; sceneDirty = true; startLoop(); }
+/* ---- external control panel (same values as Settings → Appearance; both stay in sync) ---- */
+const CTRL_DEFS = [['res', 'Backdrop sample resolution (× layar; BitChord 0.33)', .1, 1, .01], ['blur', 'Blur radius (dp)', 0, 32, .5], ['lensH', 'Lens height (× 48dp)', 0, 1, .01], ['lensA', 'Lens amount (× 48dp)', 0, 1, .01],
+  ['tint', 'Surface opacity', 0, 1, .01], ['vib', 'Vibrancy', 0, 2, .05], ['lensZoom', 'Zoom pil tab saat terangkat (tebakan)', 1, 1.5, .01], ['iconBlurPx', 'Blur ikon saat muncul/hilang (px, tebakan)', 0, 16, .5],
+  ['pressScale', 'Press scale', 1, 1.25, .01], ['pressDamp', 'Press damping', .3, 1, .01], ['relDamp', 'Release bounce damping', .15, 1, .01], ['touchGlow', 'Touch glow', 0, 1, .05], ['glowNoiseAmt', 'Noise pada glow (tebakan)', 0, 1, .05], ['menuDamp', 'Menu morph damping', .4, 1, .01], ['speed', 'Kecepatan animasi (× audit)', .05, 1, .05]];
+const CHK = [[P, 'glass', 'Liquid Glass'], [P, 'frost', 'Better performance for glass (frost)'], [P, 'chroma', 'Chromatic aberration'], [P, 'depth', 'Depth effect'], [P, 'pillDepth', 'Depth + pinggiran warna searah sisi pil (beda dari BitChord)'], [P, 'accent', 'Accent pada tab terpilih'],
+  [P, 'iconBlur', 'Blur ikon saat muncul/hilang (tebakan)'], [P, 'glowOn', 'Touch glow (cahaya saat disentuh)'], [P, 'glowNoise', 'Noise pada touch glow (tebakan)'], [ST, 'progBlur', 'Progressive blur atas (BitChord TopFadeBlur)'], [ST, 'haptic', 'Haptic feedback (Android Chrome)'], [P, 'hud', 'Performance HUD']];
+const ctrls = $('#ctrls'), outs = {};
+CTRL_DEFS.forEach(([k, label, mn, mx, st]) => { const row = document.createElement('div'); row.className = 'row'; row.innerHTML = `<label>${label}</label><output></output><input type="range" min="${mn}" max="${mx}" step="${st}">`;
+  const inp = row.querySelector('input'), out = row.querySelector('output'); outs[k] = [inp, out];
+  inp.addEventListener('input', () => { P[k] = +inp.value; out.textContent = P[k]; blurDirty = glyphDirty = true; if (S.nav.length) refreshPage(); else { persist(); startLoop(); } }); ctrls.appendChild(row); });
+CHK.forEach(([o, k, label]) => { const l = document.createElement('label'); l.className = 'chk'; l.innerHTML = `<input type="checkbox"><span>${label}</span>`; const inp = l.querySelector('input'); outs[(o === ST ? 'st:' : '') + k] = [inp, null, o, k];
+  inp.addEventListener('change', () => { o[k] = inp.checked; if (o === ST && k === 'haptic') HAPTIC = ST.haptic; blurDirty = glyphDirty = true; refreshPage(); }); ctrls.appendChild(l); });
+syncCtrls = function(){ for (const k in outs){ const [i, out, o, kk] = outs[k]; if (i.type === 'checkbox') i.checked = !!o[kk]; else { if (document.activeElement !== i) i.value = P[k]; out.textContent = P[k]; } }
+  const bt = $('#bTheme'); if (bt) bt.textContent = 'Tema: ' + (S.dark ? 'gelap' : 'terang'); };
+$('#bTheme').addEventListener('click', () => { setThemeMode(S.dark ? 1 : 2); refreshPage(); });
+$('#bReset').addEventListener('click', () => { Object.assign(P, DEFAULTS); blurDirty = glyphDirty = true; refreshPage(); });
+syncCtrls();
+{ const sr = $('#selR'); sr.value = RENDERERS.includes(ST.renderer) ? ST.renderer : 'auto'; sr.addEventListener('change', () => setRenderer(RENDERERS.indexOf(sr.value))); }
+$('#gear').addEventListener('click', () => $('#panel').classList.toggle('open'));
+
+/* ============ boot ============ */
+try { if (WANT_GPU){ /* WebGPU: konteks dibuat di initWebGPU (async); UI tetap mode glass */ } else { if (!WANT_GL) throw new Error('Canvas dipilih'); if (!GL_OK) throw new Error('WebGL2 tidak tersedia'); initGL(); HIC = detectHIC(); } }
+catch (err) { console.error(err); GL_OK = false; HIC = null; const f = document.createElement('canvas'); f.id = 'fallbackCv'; phone.insertBefore(f, glc); glc.style.display = 'none'; initFallbackUI(); }
+glc.addEventListener('webglcontextlost', e => { e.preventDefault(); enterFallback('konteks WebGL hilang'); });
+if (HIC){
+  setTimeout(() => { if (HIC && !hicOK){ console.warn('HTML-in-Canvas: no paint, using canvas'); HIC = null; sceneDirty = true; $('#src').textContent = 'Canvas replika (HTML-in-Canvas tidak merespons)' + diagText(); startLoop(); } }, 2500);
+  glc.addEventListener('paint', () => { try { hicUpload(); sceneDirty = true; blurDirty = true; needsRender = true; startLoop(); } catch (e) { console.error('HTML-in-Canvas gagal, pakai canvas:', e); HIC = null; hicOK = false; sceneDirty = true; $('#src').textContent = 'Canvas replika (HTML-in-Canvas gagal)'; startLoop(); } });
+}
+$('#src').textContent = (HIC ? `DOM live via HTML-in-Canvas (${HIC === 'new' ? 'Chrome 155+' : 'Chrome 150–154'})` : (GL_OK ? 'Canvas replika (HTML-in-Canvas tidak aktif di browser ini)' : 'Tanpa WebGL2: blur CSS saja (tanpa lensa/refraksi)')) + diagText();
+if (WANT_GPU) initWebGPU().catch(e => skipGPU(e.message));
+if (RPICK === 'canvas') $('#src').textContent = 'Canvas 2D (dipilih manual): blur CSS saja, tanpa lensa/refraksi' + diagText(); else if (WANT_GPU) $('#src').textContent = 'WebGPU: memulai…';
+else if (RPICK === 'webgpu') console.warn('WebGPU tidak dipakai di sesi ini, memakai ' + (GL_OK ? 'WebGL2' : 'Canvas 2D'));
+setThemeMode(ST.themeMode); resize(); addEventListener('resize', resize);
+if (GL_OK || GPU) $('#src').textContent = $('#src').textContent.replace(/ · DPR.*$/, '') + diagText();      // size is only known after the first resize()
+if (DEBUG) window.__api = { buildDOM, applyDOM, S, ST, P, pill, SPR, openPage, popPage, HITS: () => HITS, setTab, setTheme, setScroll, startLoop, get HIC(){ return HIC; }, hicOK: () => hicOK, get GPU(){ return GPU; }, get cv(){ return cv; }, drawContent, GS, GT: () => GT };
+if (DEBUG){          // test hooks: read the glass output back as RGBA (top row first) from whichever renderer is active
+  const b64 = u8 => { let s = ''; for (let i = 0; i < u8.length; i += 32768) s += String.fromCharCode.apply(null, u8.subarray(i, i + 32768)); return btoa(s); };
+  window.__shot = async () => {
+    const w = glc.width, h = glc.height; sceneDirty = blurDirty = true; glyphDirty = true;
+    if (GPU){ applyDOM(); renderGPU(); const G = GPU, bpr = Math.ceil(w * 4 / 256) * 256, buf = G.dev.createBuffer({ size: bpr * h, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+      const enc = G.dev.createCommandEncoder(); enc.copyTextureToBuffer({ texture: G.off }, { buffer: buf, bytesPerRow: bpr }, [w, h]); G.dev.queue.submit([enc.finish()]); await buf.mapAsync(GPUMapMode.READ);
+      const src = new Uint8Array(buf.getMappedRange()), out = new Uint8Array(w * h * 4), bgra = G.canvasFmt.startsWith('bgra');
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++){ const i = y * bpr + x * 4, o = (y * w + x) * 4; out[o] = src[i + (bgra ? 2 : 0)]; out[o + 1] = src[i + 1]; out[o + 2] = src[i + (bgra ? 0 : 2)]; out[o + 3] = 255; }
+      buf.unmap(); return { w, h, b64: b64(out) }; }
+    applyDOM(); render(); const px = new Uint8Array(w * h * 4), out = new Uint8Array(w * h * 4); gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    for (let y = 0; y < h; y++) out.set(px.subarray((h - 1 - y) * w * 4, (h - y) * w * 4), y * w * 4); return { w, h, b64: b64(out) };
+  };
+}
+if (/[?&]test\b/.test(location.search)){          // tes kecil perhitungan slider: console menampilkan 'slider test ok' atau FAIL
+  const x0 = 16, w = 326, bad = [];
+  for (const f of [0, .25, .5, 1]){ const g = sliderGeo(f, 0, 0, x0, w), back = slFrac(slTx(f, x0, w), x0, w);
+    if (f === 0 && Math.abs(g.x - x0) > .01) bad.push('ujung kiri'); if (f === 1 && Math.abs(g.x + g.w - (x0 + w)) > .01) bad.push('ujung kanan'); if (Math.abs(back - f) > 1e-9) bad.push('jari->nilai ' + f); }
+  const fl = slFill(0, slTx(0, x0, w) - x0, w), fr = slFill(1, slTx(1, x0, w) - x0, w); if (fl !== 0 || Math.abs(fr - w) > .01) bad.push('putih track di ujung');
+  for (const [pk, sk, gpu, glx] of [['auto', 0, 0, 1], ['auto', 1, 0, 1], ['webgpu', 0, 1, 0], ['webgpu', 1, 0, 1], ['webgl2', 0, 0, 1], ['webgl2', 1, 0, 1], ['canvas', 0, 0, 0], ['canvas', 1, 0, 0]]){ const r = pickRenderer(pk, !!sk); if (r.gpu !== !!gpu || r.gl !== !!glx) bad.push('renderer ' + pk + '/' + sk); }
+  console[bad.length ? 'error' : 'log'](bad.length ? 'test FAIL: ' + bad.join(', ') : 'test ok (slider + renderer)');
+}
+window.__ready = true;
+})();
+</script>
+</body>
+</html>
